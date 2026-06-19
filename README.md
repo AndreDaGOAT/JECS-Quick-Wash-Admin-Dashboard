@@ -21,6 +21,11 @@ cd JECS-Quick-Wash-Admin-Dashboard
 npm install
 ```
 
+3. Create environment variables:
+```bash
+cp .env.example .env
+```
+
 ### Development
 
 Start the development server:
@@ -47,15 +52,21 @@ npm run preview
 ## Project Structure
 
 ```
-.
-├── index.html          # Entry HTML file
-├── package.json        # Project dependencies
-├── vite.config.js      # Vite configuration
-└── src/
-    ├── main.jsx        # Application entry point
-    ├── App.jsx         # Main App component
-    ├── App.css         # App component styles
-    └── index.css       # Global styles
+jecs-admin-dashboard/
+├── package.json
+├── vite.config.js
+├── index.html
+├── .gitignore
+├── .env.example
+├── README.md
+├── src/
+│   ├── main.jsx
+│   ├── App.jsx
+│   ├── dashboard/
+│   │   └── jecs-admin-dashboard.jsx
+│   └── index.css
+└── public/
+    └── favicon.ico
 ```
 
 ## Technologies
@@ -63,6 +74,18 @@ npm run preview
 - **React 18** - UI library
 - **Vite** - Build tool and dev server
 - **JavaScript (ES6+)** - Programming language
+
+## Features
+
+- ✨ Modern dashboard interface
+- 📊 Real-time statistics display
+- 📱 Responsive design
+- ⚡ Fast development with Vite HMR
+- 🎨 Beautiful UI with CSS styling
+
+## Environment Variables
+
+See `.env.example` for available environment variables.
 
 ## License
 

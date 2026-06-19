@@ -1,5 +1,12 @@
-import Dashboard from './admin/Dashboard';
+import JecsAdminDashboard from './dashboard/jecs-admin-dashboard'
+import './App.css'
 
-export default function App() {
-  return <Dashboard />;
+function App() {
+  return (
+    <div className="app">
+      <JecsAdminDashboard />
+    </div>
+  )
 }
+
+export default App

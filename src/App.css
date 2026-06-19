@@ -1,33 +1,109 @@
-#root {
-  max-width: 1280px;
+.app {
+  width: 100%;
+  min-height: 100vh;
+  padding: 0;
+  margin: 0;
+}
+
+.dashboard-container {
+  max-width: 1400px;
   margin: 0 auto;
   padding: 2rem;
+}
+
+.dashboard-header {
+  margin-bottom: 3rem;
   text-align: center;
 }
 
-button {
+.dashboard-header h1 {
+  font-size: 2.5rem;
+  margin: 0 0 0.5rem 0;
+  color: #333;
+}
+
+.dashboard-header p {
+  font-size: 1.1rem;
+  color: #666;
+  margin: 0;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 3rem;
+}
+
+.stat-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 1.5rem;
   border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
 
-button:hover {
-  border-color: #646cff;
+.stat-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
 }
 
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+.stat-card h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.9;
 }
 
-@media (prefers-color-scheme: light) {
-  button {
-    background-color: #f9f9f9;
+.stat-value {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: bold;
+}
+
+.dashboard-content {
+  background: white;
+  border-radius: 8px;
+  padding: 2rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.content-section {
+  margin-bottom: 2rem;
+}
+
+.content-section:last-child {
+  margin-bottom: 0;
+}
+
+.content-section h2 {
+  margin: 0 0 1rem 0;
+  color: #333;
+  font-size: 1.5rem;
+}
+
+.content-section p {
+  color: #666;
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  .dashboard-header h1 {
+    font-size: 1.8rem;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1rem;
+  }
+
+  .stat-card {
+    padding: 1rem;
+  }
+
+  .stat-value {
+    font-size: 1.5rem;
   }
 }
