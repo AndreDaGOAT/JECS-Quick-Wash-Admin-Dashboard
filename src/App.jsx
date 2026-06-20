@@ -1,5 +1,5 @@
-import Dashboard from "./dashboard/jecs-admin-dashboard";
+import JecsAdminDashboard from './dashboard/jecs-admin-dashboard';
 
 export default function App() {
-  return <Dashboard />;
+  return <JecsAdminDashboard />;
 }
