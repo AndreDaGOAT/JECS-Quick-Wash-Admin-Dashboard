@@ -329,31 +329,90 @@ function AppointmentsTab() {
   const [loading, setLoading]     = useState(true);
   const [filter, setFilter]       = useState(null);
   const [search, setSearch]       = useState("");
+  const [todayOnly, setTodayOnly] = useState(false);
   const [toast, setToast]         = useState("");
   const [editAppt, setEditAppt]   = useState(null);
-  const [showNew, setShowNew]     = useState(false);
+  const [fetchErr, setFetchErr]   = useState("");
 
   const showToast = (m) => { setToast(m); setTimeout(() => setToast(""), 3000); };
 
   const load = useCallback(async () => {
     setLoading(true);
+    setFetchErr("");
     try {
-      // Fetch appointments joined with customer name/address and vehicle info
-      const appts = await sbFetch(
-        "appointments?select=*,customers(full_name,formatted_address),vehicles(make,model,year,color)&order=scheduled_start.asc&limit=300"
-      ) || [];
+      // Attempt 1: joined query (customers + vehicles in one request)
+      let appts = null;
+      try {
+        appts = await sbFetch(
+          "appointments?select=*,customers(full_name,formatted_address),vehicles(make,model,year,color)&order=scheduled_start.asc&limit=500"
+        );
+      } catch (joinErr) {
+        console.warn("[JECS] Joined fetch failed, trying plain fetch:", joinErr.message);
+      }
 
-      const enriched = appts.map(a => ({
-        ...a,
-        customer_name:    a.customers?.full_name || "—",
-        customer_address: a.customers?.formatted_address || "",
-        vehicle_summary:  a.vehicles
-          ? [a.vehicles.year, a.vehicles.color, a.vehicles.make, a.vehicles.model].filter(Boolean).join(" ")
-          : "—",
+      // Attempt 2: plain appointments fetch if join failed
+      if (!appts) {
+        appts = await sbFetch(
+          "appointments?select=*&order=scheduled_start.asc&limit=500"
+        ) || [];
+      }
+
+      // Enrich with customer + vehicle data
+      const enriched = await Promise.all((appts || []).map(async (a) => {
+        // If join already populated these, use them
+        let custName    = a.customers?.full_name         || null;
+        let custAddr    = a.customers?.formatted_address || null;
+        let vehicleSum  = null;
+
+        if (a.vehicles) {
+          vehicleSum = [a.vehicles.year, a.vehicles.color, a.vehicles.make, a.vehicles.model]
+            .filter(Boolean).join(" ");
+        }
+
+        // Fallback: fetch customer separately if join didn't work
+        if (!custName && a.customer_id) {
+          try {
+            const custs = await sbFetch(
+              `customers?customer_id=eq.${a.customer_id}&select=full_name,formatted_address&limit=1`
+            );
+            if (custs && custs[0]) {
+              custName = custs[0].full_name;
+              custAddr = custs[0].formatted_address;
+            }
+          } catch (_) {}
+        }
+
+        // Fallback: fetch vehicle separately via service_request → vehicle_id
+        if (!vehicleSum && a.service_request_id) {
+          try {
+            const srs = await sbFetch(
+              `service_requests?request_id=eq.${a.service_request_id}&select=vehicle_id&limit=1`
+            );
+            const vid = srs?.[0]?.vehicle_id;
+            if (vid) {
+              const vehs = await sbFetch(
+                `vehicles?vehicle_id=eq.${vid}&select=make,model,year,color&limit=1`
+              );
+              if (vehs && vehs[0]) {
+                const v = vehs[0];
+                vehicleSum = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ");
+              }
+            }
+          } catch (_) {}
+        }
+
+        return {
+          ...a,
+          customer_name:    custName || "—",
+          customer_address: custAddr || "",
+          vehicle_summary:  vehicleSum || "—",
+        };
       }));
+
       setRows(enriched);
     } catch (e) {
-      console.error(e);
+      console.error("[JECS] Appointments load failed:", e);
+      setFetchErr(e.message || "Failed to load appointments.");
       setRows([]);
     }
     setLoading(false);
@@ -377,13 +436,17 @@ function AppointmentsTab() {
     } catch (e) { showToast("Error: " + e.message); }
   }
 
-  // Build counts for pipeline bar (today's appointments)
   const today = new Date().toISOString().slice(0, 10);
   const todayRows = rows.filter(r => (r.scheduled_start || "").startsWith(today));
-  const counts = {};
-  STATUS_PIPELINE.forEach(s => { counts[s] = todayRows.filter(r => r.appointment_status === s).length; });
 
+  // Pipeline counts across ALL appointments (not just today)
+  // so the bar always reflects the true business state
+  const counts = {};
+  STATUS_PIPELINE.forEach(s => { counts[s] = rows.filter(r => r.appointment_status === s).length; });
+
+  // Active display rows: apply today filter, status filter, and search
   const filtered = rows.filter(r => {
+    if (todayOnly && !(r.scheduled_start || "").startsWith(today)) return false;
     if (filter && r.appointment_status !== filter) return false;
     if (!search) return true;
     const q = search.toLowerCase();
@@ -403,15 +466,17 @@ function AppointmentsTab() {
         <div style={{ fontSize: 20, fontWeight: 700, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
           <Icon name="appointments" size={20} color={C.accentLight} /> Appointments
           <span style={{ fontSize: 12, background: `${C.accent}22`, color: C.accentLight, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
-            {todayRows.length} today
+            {rows.length} total · {todayRows.length} today
           </span>
         </div>
-        <button style={btn("gold")} onClick={() => setShowNew(true)}>
-          <Icon name="plus" size={13} /> New Appointment
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={btn(todayOnly ? "primary" : "ghost", false)} onClick={() => setTodayOnly(v => !v)}>
+            <Icon name="clock" size={13} /> {todayOnly ? "Today Only" : "All Dates"}
+          </button>
+        </div>
       </div>
 
-      {/* Pipeline bar — today's counts */}
+      {/* Pipeline bar — ALL appointments counts */}
       <PipelineBar counts={counts} activeFilter={filter} onFilter={setFilter} />
 
       {/* Table */}
@@ -442,9 +507,16 @@ function AppointmentsTab() {
 
         {loading ? (
           <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted }}>Loading appointments…</div>
+        ) : fetchErr ? (
+          <div style={{ padding: "3rem", textAlign: "center", color: C.danger, fontSize: 13 }}>
+            <Icon name="alert" size={18} color={C.danger} /><br /><br />
+            Could not load appointments.<br />
+            <span style={{ fontSize: 11, color: C.textMuted }}>{fetchErr}</span><br /><br />
+            <button style={btn("ghost", true)} onClick={load}><Icon name="refresh" size={12} /> Retry</button>
+          </div>
         ) : filtered.length === 0 ? (
           <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted, fontSize: 13 }}>
-            {filter ? `No appointments with status "${filter}".` : "No appointments found."}
+            {filter ? `No appointments with status "${filter}".` : todayOnly ? "No appointments scheduled for today." : "No appointments found."}
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
@@ -1000,4 +1072,4 @@ export default function App() {
       </div>
     </div>
   );
-            }
+          }
