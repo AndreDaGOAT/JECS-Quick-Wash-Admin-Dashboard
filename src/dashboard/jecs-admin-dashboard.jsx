@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+ 
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const SB_URL = "https://mylqkbpclcrqorjctjxn.supabase.co";
@@ -578,7 +579,17 @@ function AppointmentModal({ appt, onClose, onSave }) {
 
   async function save() {
     setSaving(true); setErr("");
-    try { await onSave(form); onClose(); }
+    try {
+      // Sanitise integer fields — Postgres rejects "" for integer columns
+      const payload = {
+        ...form,
+        weather_score: form.weather_score === "" || form.weather_score === null
+          ? null
+          : parseInt(form.weather_score, 10) || null,
+      };
+      await onSave(payload);
+      onClose();
+    }
     catch (e) { setErr(e.message); }
     finally { setSaving(false); }
   }
@@ -629,22 +640,96 @@ function AppointmentModal({ appt, onClose, onSave }) {
   );
 }
 
+// ── Date Range Navigator (shared by Dashboard + Wash Pro) ─────────────────────
+function DateStrip({ selectedDate, onSelect, rangedays = 14 }) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const days = [];
+  for (let i = -rangedays; i <= rangedays; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    days.push(d.toISOString().slice(0, 10));
+  }
+
+  const stripRef = { current: null };
+
+  useEffect(() => {
+    // Scroll selected day into view on mount
+    const el = document.getElementById(`day-${selectedDate}`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, [selectedDate]);
+
+  return (
+    <div style={{ marginBottom: "1.5rem" }}>
+      {/* Week label row */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <button style={btn("ghost", true)} onClick={() => {
+          const idx = days.indexOf(selectedDate);
+          if (idx > 0) onSelect(days[idx - 1]);
+        }}>◀</button>
+        <div style={{ flex: 1, overflowX: "auto", display: "flex", gap: 6, scrollbarWidth: "none" }}
+          ref={r => { stripRef.current = r; }}>
+          {days.map(d => {
+            const date    = new Date(d + "T12:00:00");
+            const isToday = d === todayStr;
+            const isSel   = d === selectedDate;
+            const isPast  = d < todayStr;
+            return (
+              <div key={d} id={`day-${d}`}
+                onClick={() => onSelect(d)}
+                style={{
+                  flexShrink: 0, width: 54, textAlign: "center",
+                  padding: "8px 4px", borderRadius: 8, cursor: "pointer",
+                  background: isSel ? C.accent : isToday ? `${C.gold}22` : "transparent",
+                  border: isToday && !isSel ? `1px solid ${C.gold}55` : `1px solid ${isSel ? C.accent : "transparent"}`,
+                  transition: "all 0.12s",
+                }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: isSel ? "#fff" : isToday ? C.gold : C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                  {date.toLocaleDateString([], { weekday: "short" })}
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: isSel ? "#fff" : isPast ? C.textMuted : C.text, lineHeight: 1.2 }}>
+                  {date.getDate()}
+                </div>
+                <div style={{ fontSize: 10, color: isSel ? "#ffffffaa" : C.textMuted }}>
+                  {date.toLocaleDateString([], { month: "short" })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <button style={btn("ghost", true)} onClick={() => {
+          const idx = days.indexOf(selectedDate);
+          if (idx < days.length - 1) onSelect(days[idx + 1]);
+        }}>▶</button>
+        <button style={btn(selectedDate === todayStr ? "primary" : "ghost", true)}
+          onClick={() => onSelect(todayStr)}>
+          Today
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 function DashboardTab({ onNavigate }) {
-  const [data, setData]       = useState({});
-  const [loading, setLoading] = useState(true);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+  const [allAppts, setAllAppts]   = useState([]);
+  const [subs, setSubs]           = useState([]);
+  const [payments, setPayments]   = useState([]);
+  const [loading, setLoading]     = useState(true);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
       try {
-        const today = new Date().toISOString().slice(0, 10);
-        const [appts, subs, payments] = await Promise.all([
-          sbFetch("appointments?select=appointment_id,appointment_status,scheduled_start&limit=500") || [],
+        const [appts, subsData, paysData] = await Promise.all([
+          sbFetch("appointments?select=appointment_id,appointment_status,scheduled_start&limit=1000") || [],
           sbFetch("subscriptions?select=subscription_id,active&limit=500") || [],
           sbFetch("payments?select=payment_id,payment_status,amount&limit=500") || [],
         ]);
-        setData({ appts: appts || [], subs: subs || [], payments: payments || [], today });
+        setAllAppts(appts || []);
+        setSubs(subsData || []);
+        setPayments(paysData || []);
       } catch (e) { console.error(e); }
       setLoading(false);
     })();
@@ -652,50 +737,52 @@ function DashboardTab({ onNavigate }) {
 
   if (loading) return <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted }}>Loading…</div>;
 
-  const { appts = [], subs = [], payments = [], today = "" } = data;
+  // Filter appointments to selected date
+  const dayAppts   = allAppts.filter(a => (a.scheduled_start || "").startsWith(selectedDate));
+  const isToday    = selectedDate === todayStr;
+  const isPast     = selectedDate < todayStr;
 
-  const todayAppts   = appts.filter(a => (a.scheduled_start || "").startsWith(today));
-  const completed    = appts.filter(a => a.appointment_status === "Completed");
-  const inFlight     = appts.filter(a => ["Confirmed","En Route","In Progress","Quality Check"].includes(a.appointment_status));
-  const requested    = appts.filter(a => a.appointment_status === "Requested");
-  const activeSubs   = subs.filter(s => s.active === true);
-  const pendingPay   = payments.filter(p => p.payment_status === "Pending");
-  const revenue      = payments.filter(p => p.payment_status === "Paid").reduce((s, p) => s + Number(p.amount || 0), 0);
+  const requested  = dayAppts.filter(a => a.appointment_status === "Requested");
+  const inFlight   = dayAppts.filter(a => ["Confirmed","En Route","In Progress","Quality Check"].includes(a.appointment_status));
+  const completed  = dayAppts.filter(a => a.appointment_status === "Completed");
+  const activeSubs = subs.filter(s => s.active === true);
+  const pendingPay = payments.filter(p => p.payment_status === "Pending");
+  const revenue    = payments.filter(p => p.payment_status === "Paid").reduce((s, p) => s + Number(p.amount || 0), 0);
+
+  const dateLabel = isToday
+    ? "Today"
+    : new Date(selectedDate + "T12:00:00").toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
 
   const metrics = [
-    { label: "Today's Appointments", value: todayAppts.length,  accent: C.accentLight, icon: "clock",    action: () => onNavigate("appointments") },
-    { label: "Requested (Need Confirmation)", value: requested.length,  accent: C.warning,    icon: "alert",    action: () => onNavigate("appointments") },
-    { label: "In Progress Today",    value: inFlight.length,    accent: C.purple,     icon: "car",      action: () => onNavigate("appointments") },
-    { label: "Completed All-Time",   value: completed.length,   accent: C.success,    icon: "check",    action: () => onNavigate("appointments") },
-    { label: "Active Subscriptions", value: activeSubs.length,  accent: C.gold,       icon: "subscriptions", action: () => onNavigate("subscriptions") },
-    { label: "Payments Pending",     value: pendingPay.length,  accent: C.danger,     icon: "alert",    action: null },
-    { label: "Revenue (Paid)",       value: `$${revenue.toFixed(2)}`, accent: C.success, icon: "check", action: null },
+    { label: `${dateLabel}'s Appointments`, value: dayAppts.length,   accent: C.accentLight, icon: "clock",         action: () => onNavigate("appointments") },
+    { label: "Requested",                   value: requested.length,  accent: C.warning,     icon: "alert",         action: () => onNavigate("appointments") },
+    { label: "In Progress",                 value: inFlight.length,   accent: C.purple,      icon: "car",           action: () => onNavigate("appointments") },
+    { label: "Completed",                   value: completed.length,  accent: C.success,     icon: "check",         action: () => onNavigate("appointments") },
+    { label: "Active Subscriptions",        value: activeSubs.length, accent: C.gold,        icon: "subscriptions", action: null },
+    { label: "Payments Pending",            value: pendingPay.length, accent: C.danger,      icon: "alert",         action: null },
+    { label: "Revenue (Paid)",              value: `$${revenue.toFixed(2)}`, accent: C.success, icon: "check",      action: null },
   ];
 
-  // Pipeline counts for today
-  const todayCounts = {};
-  STATUS_PIPELINE.forEach(s => { todayCounts[s] = todayAppts.filter(a => a.appointment_status === s).length; });
+  const dayCounts = {};
+  STATUS_PIPELINE.forEach(s => { dayCounts[s] = dayAppts.filter(a => a.appointment_status === s).length; });
 
   return (
     <div>
-      <div style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: "1.5rem", display: "flex", alignItems: "center", gap: 8 }}>
-        <Icon name="dashboard" size={20} color={C.accentLight} /> Daily Overview
-        <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 400 }}>
-          {new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
+      <div style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: "1.25rem", display: "flex", alignItems: "center", gap: 8 }}>
+        <Icon name="dashboard" size={20} color={C.accentLight} /> Overview
+        <span style={{ fontSize: 13, color: isPast ? C.textMuted : isToday ? C.gold : C.accentLight, fontWeight: 600 }}>
+          {dateLabel}
         </span>
       </div>
 
+      {/* Date strip navigator — ±2 weeks */}
+      <DateStrip selectedDate={selectedDate} onSelect={setSelectedDate} rangedays={14} />
+
       {/* Metric cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "1rem", marginBottom: "2rem" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))", gap: "1rem", marginBottom: "2rem" }}>
         {metrics.map(m => (
-          <div key={m.label}
-            onClick={m.action || undefined}
-            style={{
-              background: C.surfaceAlt, border: `1px solid ${C.border}`,
-              borderTop: `3px solid ${m.accent}`, borderRadius: 10,
-              padding: "1.1rem 1.25rem", cursor: m.action ? "pointer" : "default",
-              transition: "border-color 0.15s",
-            }}>
+          <div key={m.label} onClick={m.action || undefined}
+            style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderTop: `3px solid ${m.accent}`, borderRadius: 10, padding: "1.1rem 1.25rem", cursor: m.action ? "pointer" : "default" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               {m.label} <Icon name={m.icon} size={14} color={m.accent} />
             </div>
@@ -704,15 +791,19 @@ function DashboardTab({ onNavigate }) {
         ))}
       </div>
 
-      {/* Today's pipeline */}
-      <div style={{ marginBottom: "0.75rem", fontSize: 13, fontWeight: 600, color: C.textMuted }}>TODAY'S PIPELINE</div>
-      <PipelineBar counts={todayCounts} activeFilter={null} onFilter={() => onNavigate("appointments")} />
+      {/* Pipeline for selected date */}
+      <div style={{ marginBottom: "0.75rem", fontSize: 12, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase" }}>
+        Pipeline — {dateLabel}
+      </div>
+      <PipelineBar counts={dayCounts} activeFilter={null} onFilter={() => onNavigate("appointments")} />
     </div>
   );
 }
 
 // ── Wash Pro View ─────────────────────────────────────────────────────────────
 function WashProTab() {
+  const todayStr  = new Date().toISOString().slice(0, 10);
+  const [selectedDate, setSelectedDate] = useState(todayStr);
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast]     = useState("");
@@ -722,11 +813,9 @@ function WashProTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const today = new Date().toISOString().slice(0, 10);
       const appts = await sbFetch(
-        `appointments?select=*,customers(full_name,formatted_address,phone_number),vehicles(make,model,year,color,license_plate)&scheduled_start=gte.${today}T00:00:00&scheduled_start=lte.${today}T23:59:59&order=scheduled_start.asc&limit=100`
+        `appointments?select=*,customers(full_name,formatted_address,phone_number),vehicles(make,model,year,color,license_plate)&scheduled_start=gte.${selectedDate}T00:00:00&scheduled_start=lte.${selectedDate}T23:59:59&order=scheduled_start.asc&limit=100`
       ) || [];
-
       setRows(appts.map(a => ({
         ...a,
         customer_name:    a.customers?.full_name         || "—",
@@ -739,7 +828,7 @@ function WashProTab() {
       })));
     } catch (e) { console.error(e); setRows([]); }
     setLoading(false);
-  }, []);
+  }, [selectedDate]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -751,21 +840,29 @@ function WashProTab() {
     } catch (e) { showToast("Error: " + e.message); }
   }
 
-  const today = new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+  const isToday   = selectedDate === todayStr;
+  const dateLabel = isToday
+    ? "Today"
+    : new Date(selectedDate + "T12:00:00").toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+  const today     = new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
 
   return (
     <div>
       <Toast msg={toast} />
 
       <div style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: "0.25rem", display: "flex", alignItems: "center", gap: 8 }}>
-        <Icon name="washpro" size={20} color={C.accentLight} /> Wash Pro — Today's Jobs
+        <Icon name="washpro" size={20} color={C.accentLight} /> Wash Pro
+        <span style={{ fontSize: 13, color: isToday ? C.gold : C.accentLight, fontWeight: 600 }}>{dateLabel}</span>
       </div>
-      <div style={{ fontSize: 13, color: C.textMuted, marginBottom: "1.5rem" }}>{today}</div>
+      <div style={{ fontSize: 12, color: C.textMuted, marginBottom: "1rem" }}>{today}</div>
+
+      {/* Date strip navigator — ±2 weeks */}
+      <DateStrip selectedDate={selectedDate} onSelect={setSelectedDate} rangedays={14} />
 
       {loading ? (
-        <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted }}>Loading today's jobs…</div>
+        <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted }}>Loading jobs for {dateLabel}…</div>
       ) : rows.length === 0 ? (
-        <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted, fontSize: 13 }}>No appointments scheduled for today.</div>
+        <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted, fontSize: 13 }}>No appointments scheduled for {dateLabel}.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           {rows.map(a => {
@@ -1072,4 +1169,4 @@ export default function App() {
       </div>
     </div>
   );
-          }
+}
