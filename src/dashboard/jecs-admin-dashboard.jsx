@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
- 
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const SB_URL = "https://mylqkbpclcrqorjctjxn.supabase.co";
@@ -9,6 +8,7 @@ const ADMIN_EMAILS = [
   "concierge@jubileeexecutivecarservice.com",
   "contact@jubileeexecutivecarservice.com",
   "aarmstrong1234@gmail.com",
+  "assistant@jubileeexecutivecarservice.com",
 ];
 
 // Appointment status pipeline
@@ -279,6 +279,10 @@ function ApptRow({ appt, onAdvance, onSetStatus, onEdit, compact }) {
     ? new Date(appt.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : "—";
 
+  const mapsUrl = appt.customer_address
+    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(appt.customer_address)}`
+    : null;
+
   const td = { padding: "12px 14px", borderBottom: `1px solid ${C.border}22`, verticalAlign: "middle", color: C.text, fontSize: 13 };
 
   return (
@@ -286,14 +290,34 @@ function ApptRow({ appt, onAdvance, onSetStatus, onEdit, compact }) {
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
       <td style={td}>
         <div style={{ fontWeight: 600 }}>{appt.customer_name || "—"}</div>
-        <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{appt.customer_address || ""}</div>
+        {mapsUrl ? (
+          <a href={mapsUrl} target="_blank" rel="noreferrer"
+            style={{ fontSize: 11, color: C.accentLight, marginTop: 2, display: "block", textDecoration: "none" }}
+            title="Open in Google Maps">
+            📍 {appt.customer_address}
+          </a>
+        ) : (
+          <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{appt.customer_address || ""}</div>
+        )}
       </td>
       <td style={td}>
         <div style={{ display: "flex", alignItems: "center", gap: 5, color: C.accentLight }}>
           <Icon name="clock" size={12} color={C.accentLight} /> {time}
         </div>
+        {appt.preferred_time_window && (
+          <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{appt.preferred_time_window}</div>
+        )}
       </td>
-      {!compact && <td style={td}>{appt.vehicle_summary || "—"}</td>}
+      {!compact && (
+        <td style={td}>
+          <div>{appt.vehicle_summary || "—"}</div>
+          {appt.license_plate && appt.license_plate !== "—" && (
+            <div style={{ fontSize: 11, color: C.gold, fontWeight: 700, marginTop: 2 }}>
+              🪪 {appt.license_plate}
+            </div>
+          )}
+        </td>
+      )}
       <td style={td}><span style={pill(appt.appointment_status)}>{appt.appointment_status || "—"}</span></td>
       <td style={{ ...td, whiteSpace: "nowrap" }}>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -302,17 +326,15 @@ function ApptRow({ appt, onAdvance, onSetStatus, onEdit, compact }) {
               {advancing ? "…" : <>→ {nextStatus}</>}
             </button>
           )}
-          <div style={{ position: "relative" }}>
-            <select
-              style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6, color: C.textMuted, fontSize: 11, padding: "4px 8px", cursor: "pointer" }}
-              value={appt.appointment_status || ""}
-              onChange={e => onSetStatus(appt, e.target.value)}
-            >
-              {STATUS_PIPELINE.map(s => <option key={s} value={s}>{s}</option>)}
-              <option value={STATUS_CANCELLED}>Cancelled</option>
-              <option value={STATUS_RESCHEDULED}>Rescheduled</option>
-            </select>
-          </div>
+          <select
+            style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6, color: C.textMuted, fontSize: 11, padding: "4px 8px", cursor: "pointer" }}
+            value={appt.appointment_status || ""}
+            onChange={e => onSetStatus(appt, e.target.value)}
+          >
+            {STATUS_PIPELINE.map(s => <option key={s} value={s}>{s}</option>)}
+            <option value={STATUS_CANCELLED}>Cancelled</option>
+            <option value={STATUS_RESCHEDULED}>Rescheduled</option>
+          </select>
           {onEdit && (
             <button style={btn("ghost", true)} onClick={() => onEdit(appt)} title="Edit">
               <Icon name="edit" size={12} />
@@ -345,7 +367,7 @@ function AppointmentsTab() {
       let appts = null;
       try {
         appts = await sbFetch(
-          "appointments?select=*,customers(full_name,formatted_address),vehicles(make,model,year,color)&order=scheduled_start.asc&limit=500"
+          "appointments?select=*,customers(full_name,formatted_address),vehicles(make,model,year,color,license_plate)&order=scheduled_start.asc&limit=500"
         );
       } catch (joinErr) {
         console.warn("[JECS] Joined fetch failed, trying plain fetch:", joinErr.message);
@@ -407,6 +429,7 @@ function AppointmentsTab() {
           customer_name:    custName || "—",
           customer_address: custAddr || "",
           vehicle_summary:  vehicleSum || "—",
+          license_plate:    a.vehicles?.license_plate || "—",
         };
       }));
 
@@ -564,23 +587,33 @@ function AppointmentsTab() {
 // ── Appointment Edit Modal ────────────────────────────────────────────────────
 function AppointmentModal({ appt, onClose, onSave }) {
   const [form, setForm] = useState({
-    scheduled_start:    appt?.scheduled_start || "",
-    scheduled_end:      appt?.scheduled_end   || "",
-    appointment_status: appt?.appointment_status || "Requested",
+    scheduled_start:       appt?.scheduled_start       || "",
+    scheduled_end:         appt?.scheduled_end         || "",
+    appointment_status:    appt?.appointment_status    || "Requested",
     preferred_time_window: appt?.preferred_time_window || "",
-    customer_notes:     appt?.customer_notes   || "",
-    weather_score:      appt?.weather_score    || "",
+    customer_notes:        appt?.customer_notes        || "",
+    weather_score:         appt?.weather_score         || "",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr]       = useState("");
 
-  const inp = { background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6, padding: "7px 11px", color: C.text, fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box" };
-  const lbl = { fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 4 };
+  const inp     = { background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6, padding: "7px 11px", color: C.text, fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box" };
+  const inpReq  = { ...inp, border: `1px solid ${C.warning}66` };
+  const lbl     = { fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 4 };
+  const lblReq  = { ...lbl, color: C.warning };
+
+  const mapsUrl = appt?.customer_address
+    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(appt.customer_address)}`
+    : null;
 
   async function save() {
+    // Preferred time window is mandatory
+    if (!form.preferred_time_window.trim()) {
+      setErr("Preferred time window is required.");
+      return;
+    }
     setSaving(true); setErr("");
     try {
-      // Sanitise integer fields — Postgres rejects "" for integer columns
       const payload = {
         ...form,
         weather_score: form.weather_score === "" || form.weather_score === null
@@ -597,24 +630,63 @@ function AppointmentModal({ appt, onClose, onSave }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "#00000099", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={e => e.target === e.currentTarget && onClose()}>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, width: 540, maxWidth: "95vw", maxHeight: "90vh", overflowY: "auto", padding: "2rem", boxShadow: "0 25px 60px #00000099" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-          <div style={{ fontSize: 17, fontWeight: 700, color: C.text }}>Edit Appointment</div>
-          <button style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted }} onClick={onClose}><Icon name="x" size={18} /></button>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, width: 580, maxWidth: "95vw", maxHeight: "92vh", overflowY: "auto", padding: "2rem", boxShadow: "0 25px 60px #00000099" }}>
+
+        {/* Header — customer name prominent */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+          <div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: C.text }}>Edit Appointment</div>
+            {appt?.customer_name && (
+              <div style={{ fontSize: 14, color: C.accentLight, marginTop: 4, fontWeight: 600 }}>
+                👤 {appt.customer_name}
+              </div>
+            )}
+          </div>
+          <button style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted }} onClick={onClose}>
+            <Icon name="x" size={18} />
+          </button>
         </div>
+
+        {/* Read-only info strip — address + maps link + vehicle + plate */}
+        <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px", marginBottom: "1.5rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", fontSize: 13 }}>
+          <div>
+            <div style={lbl}>Address</div>
+            {mapsUrl ? (
+              <a href={mapsUrl} target="_blank" rel="noreferrer"
+                style={{ color: C.accentLight, textDecoration: "none", fontSize: 13 }}>
+                📍 {appt?.customer_address || "—"}
+              </a>
+            ) : (
+              <div style={{ color: C.text }}>{appt?.customer_address || "—"}</div>
+            )}
+          </div>
+          <div>
+            <div style={lbl}>Vehicle</div>
+            <div style={{ color: C.text }}>{appt?.vehicle_summary || "—"}</div>
+            {appt?.license_plate && appt.license_plate !== "—" && (
+              <div style={{ color: C.gold, fontWeight: 700, marginTop: 4 }}>🪪 {appt.license_plate}</div>
+            )}
+          </div>
+        </div>
+
+        {/* Editable fields */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-          {[
-            { key: "scheduled_start", label: "Scheduled Start", type: "datetime-local" },
-            { key: "scheduled_end",   label: "Scheduled End",   type: "datetime-local" },
-            { key: "preferred_time_window", label: "Preferred Time Window" },
-            { key: "weather_score",   label: "Weather Score" },
-          ].map(f => (
-            <div key={f.key}>
-              <label style={lbl}>{f.label}</label>
-              <input style={inp} type={f.type || "text"} value={form[f.key] || ""}
-                onChange={e => setForm(v => ({ ...v, [f.key]: e.target.value }))} />
-            </div>
-          ))}
+
+          {/* Preferred time window — mandatory */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={lblReq}>Preferred Time Window <span style={{ color: C.danger }}>*</span></label>
+            <select
+              style={form.preferred_time_window ? inp : inpReq}
+              value={form.preferred_time_window}
+              onChange={e => setForm(v => ({ ...v, preferred_time_window: e.target.value }))}>
+              <option value="">-- Select a time window --</option>
+              <option value="8AM-11AM">8AM – 11AM</option>
+              <option value="11AM-2PM">11AM – 2PM</option>
+              <option value="2PM-5PM">2PM – 5PM</option>
+            </select>
+          </div>
+
+          {/* Status */}
           <div style={{ gridColumn: "1 / -1" }}>
             <label style={lbl}>Status</label>
             <select style={inp} value={form.appointment_status}
@@ -624,16 +696,47 @@ function AppointmentModal({ appt, onClose, onSave }) {
               <option value={STATUS_RESCHEDULED}>Rescheduled</option>
             </select>
           </div>
+
+          {/* Scheduled start / end */}
+          {[
+            { key: "scheduled_start", label: "Scheduled Start", type: "datetime-local" },
+            { key: "scheduled_end",   label: "Scheduled End",   type: "datetime-local" },
+          ].map(f => (
+            <div key={f.key}>
+              <label style={lbl}>{f.label}</label>
+              <input style={inp} type={f.type} value={form[f.key] || ""}
+                onChange={e => setForm(v => ({ ...v, [f.key]: e.target.value }))} />
+            </div>
+          ))}
+
+          {/* Weather score */}
+          <div>
+            <label style={lbl}>Weather Score (0–100)</label>
+            <input style={inp} type="number" min="0" max="100"
+              value={form.weather_score || ""}
+              onChange={e => setForm(v => ({ ...v, weather_score: e.target.value }))} />
+          </div>
+
+          {/* Customer notes */}
           <div style={{ gridColumn: "1 / -1" }}>
             <label style={lbl}>Customer Notes</label>
-            <textarea style={{ ...inp, minHeight: 80, resize: "vertical" }} value={form.customer_notes || ""}
+            <textarea style={{ ...inp, minHeight: 80, resize: "vertical" }}
+              value={form.customer_notes || ""}
               onChange={e => setForm(v => ({ ...v, customer_notes: e.target.value }))} />
           </div>
         </div>
-        {err && <div style={{ marginTop: "1rem", fontSize: 12, color: C.danger }}>{err}</div>}
+
+        {err && (
+          <div style={{ marginTop: "1rem", fontSize: 12, color: C.danger, display: "flex", gap: 6, alignItems: "center" }}>
+            <Icon name="alert" size={13} color={C.danger} /> {err}
+          </div>
+        )}
+
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: "1.5rem" }}>
           <button style={btn("ghost")} onClick={onClose}>Cancel</button>
-          <button style={btn("primary")} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+          <button style={btn("primary")} onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save Appointment"}
+          </button>
         </div>
       </div>
     </div>
