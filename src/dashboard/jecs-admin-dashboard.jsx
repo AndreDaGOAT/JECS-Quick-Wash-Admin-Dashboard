@@ -310,7 +310,12 @@ function ApptRow({ appt, onAdvance, onSetStatus, onEdit, compact }) {
       </td>
       {!compact && (
         <td style={td}>
-          <div>{appt.vehicle_summary || "—"}</div>
+          <div>{appt.vehicle_summary !== "—" ? appt.vehicle_summary : appt.vehicle_type !== "—" ? appt.vehicle_type : "—"}</div>
+          {appt.vehicle_type && appt.vehicle_type !== "—" && appt.vehicle_type !== appt.vehicle_summary && (
+            <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>
+              {appt.vehicle_type}
+            </div>
+          )}
           {appt.license_plate && appt.license_plate !== "—" && (
             <div style={{ fontSize: 11, color: C.gold, fontWeight: 700, marginTop: 2 }}>
               🪪 {appt.license_plate}
@@ -663,7 +668,10 @@ function AppointmentModal({ appt, onClose, onSave }) {
           </div>
           <div>
             <div style={lbl}>Vehicle</div>
-            <div style={{ color: C.text }}>{appt?.vehicle_summary || "—"}</div>
+            <div style={{ color: C.text }}>{appt?.vehicle_summary && appt.vehicle_summary !== "—" ? appt.vehicle_summary : appt?.vehicle_type || "—"}</div>
+            {appt?.vehicle_type && appt.vehicle_type !== "—" && appt.vehicle_type !== appt?.vehicle_summary && (
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{appt.vehicle_type}</div>
+            )}
             {appt?.license_plate && appt.license_plate !== "—" && (
               <div style={{ color: C.gold, fontWeight: 700, marginTop: 4 }}>🪪 {appt.license_plate}</div>
             )}
@@ -918,18 +926,23 @@ function WashProTab() {
     setLoading(true);
     try {
       const appts = await sbFetch(
-        `appointments?select=*,customers(full_name,formatted_address,phone_number),vehicles(make,model,year,color,license_plate)&scheduled_start=gte.${selectedDate}T00:00:00&scheduled_start=lte.${selectedDate}T23:59:59&order=scheduled_start.asc&limit=100`
+        `appointments?select=*,customers(full_name,formatted_address,phone_number),service_requests(vehicle_id,vehicles(make,model,year,color,license_plate,vehicle_type))&scheduled_start=gte.${selectedDate}T00:00:00&scheduled_start=lte.${selectedDate}T23:59:59&order=scheduled_start.asc&limit=100`
       ) || [];
-      setRows(appts.map(a => ({
-        ...a,
-        customer_name:    a.customers?.full_name         || "—",
-        customer_address: a.customers?.formatted_address || "—",
-        customer_phone:   a.customers?.phone_number      || "—",
-        vehicle_summary:  a.vehicles
-          ? [a.vehicles.year, a.vehicles.color, a.vehicles.make, a.vehicles.model].filter(Boolean).join(" ")
-          : "—",
-        license_plate: a.vehicles?.license_plate || "—",
-      })));
+      setRows(appts.map(a => {
+        const vObj = a.service_requests?.vehicles || null;
+        const vehicleSum = vObj
+          ? [vObj.year, vObj.color, vObj.make, vObj.model].filter(Boolean).join(" ")
+          : null;
+        return {
+          ...a,
+          customer_name:    a.customers?.full_name         || "—",
+          customer_address: a.customers?.formatted_address || "—",
+          customer_phone:   a.customers?.phone_number      || "—",
+          vehicle_summary:  vehicleSum || vObj?.vehicle_type || "—",
+          vehicle_type:     vObj?.vehicle_type  || "—",
+          license_plate:    vObj?.license_plate || "—",
+        };
+      }));
     } catch (e) { console.error(e); setRows([]); }
     setLoading(false);
   }, [selectedDate]);
@@ -1006,7 +1019,12 @@ function WashProTab() {
                   </div>
                   <div>
                     <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 2 }}>Vehicle</div>
-                    <div style={{ color: C.text }}>{a.vehicle_summary}</div>
+                    <div style={{ color: C.text }}>
+                    {a.vehicle_summary !== "—" ? a.vehicle_summary : a.vehicle_type !== "—" ? a.vehicle_type : "—"}
+                    {a.vehicle_type && a.vehicle_type !== "—" && a.vehicle_type !== a.vehicle_summary && (
+                      <span style={{ color: C.textMuted, fontSize: 11 }}> · {a.vehicle_type}</span>
+                    )}
+                  </div>
                   </div>
                   <div>
                     <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 2 }}>Plate</div>
