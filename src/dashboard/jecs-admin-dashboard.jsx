@@ -363,49 +363,47 @@ function AppointmentsTab() {
     setLoading(true);
     setFetchErr("");
     try {
-      // Attempt 1: joined query (customers + vehicles in one request)
+      // Join path: appointments → customers (direct FK)
+      //            appointments → service_requests → vehicles (no direct vehicle FK on appointments)
       let appts = null;
       try {
         appts = await sbFetch(
-          "appointments?select=*,customers(full_name,formatted_address),vehicles(make,model,year,color,license_plate)&order=scheduled_start.asc&limit=500"
+          "appointments?select=*,customers(full_name,formatted_address),service_requests(vehicle_id,vehicles(make,model,year,color,license_plate,vehicle_type))&order=scheduled_start.asc&limit=500"
         );
       } catch (joinErr) {
         console.warn("[JECS] Joined fetch failed, trying plain fetch:", joinErr.message);
       }
 
-      // Attempt 2: plain appointments fetch if join failed
+      // Fallback: plain fetch if join failed
       if (!appts) {
         appts = await sbFetch(
           "appointments?select=*&order=scheduled_start.asc&limit=500"
         ) || [];
       }
 
-      // Enrich with customer + vehicle data
       const enriched = await Promise.all((appts || []).map(async (a) => {
-        // If join already populated these, use them
         let custName    = a.customers?.full_name         || null;
         let custAddr    = a.customers?.formatted_address || null;
-        let vehicleSum  = null;
 
-        if (a.vehicles) {
-          vehicleSum = [a.vehicles.year, a.vehicles.color, a.vehicles.make, a.vehicles.model]
-            .filter(Boolean).join(" ");
-        }
+        // Vehicle comes via service_requests join
+        const vObj      = a.service_requests?.vehicles || null;
+        let vehicleSum  = vObj
+          ? [vObj.year, vObj.color, vObj.make, vObj.model].filter(Boolean).join(" ")
+          : null;
+        let licensePlate = vObj?.license_plate || null;
+        let vehicleType  = vObj?.vehicle_type  || null;
 
-        // Fallback: fetch customer separately if join didn't work
+        // Fallback: fetch customer separately
         if (!custName && a.customer_id) {
           try {
             const custs = await sbFetch(
               `customers?customer_id=eq.${a.customer_id}&select=full_name,formatted_address&limit=1`
             );
-            if (custs && custs[0]) {
-              custName = custs[0].full_name;
-              custAddr = custs[0].formatted_address;
-            }
+            if (custs?.[0]) { custName = custs[0].full_name; custAddr = custs[0].formatted_address; }
           } catch (_) {}
         }
 
-        // Fallback: fetch vehicle separately via service_request → vehicle_id
+        // Fallback: fetch vehicle via service_request → vehicle_id
         if (!vehicleSum && a.service_request_id) {
           try {
             const srs = await sbFetch(
@@ -414,11 +412,13 @@ function AppointmentsTab() {
             const vid = srs?.[0]?.vehicle_id;
             if (vid) {
               const vehs = await sbFetch(
-                `vehicles?vehicle_id=eq.${vid}&select=make,model,year,color&limit=1`
+                `vehicles?vehicle_id=eq.${vid}&select=make,model,year,color,license_plate,vehicle_type&limit=1`
               );
-              if (vehs && vehs[0]) {
-                const v = vehs[0];
-                vehicleSum = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ");
+              if (vehs?.[0]) {
+                const v    = vehs[0];
+                vehicleSum  = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ");
+                licensePlate = v.license_plate || null;
+                vehicleType  = v.vehicle_type  || null;
               }
             }
           } catch (_) {}
@@ -426,10 +426,11 @@ function AppointmentsTab() {
 
         return {
           ...a,
-          customer_name:    custName || "—",
-          customer_address: custAddr || "",
-          vehicle_summary:  vehicleSum || "—",
-          license_plate:    a.vehicles?.license_plate || "—",
+          customer_name:    custName    || "—",
+          customer_address: custAddr    || "",
+          vehicle_summary:  vehicleSum  || vehicleType || "—",
+          license_plate:    licensePlate || "—",
+          vehicle_type:     vehicleType  || "—",
         };
       }));
 
