@@ -368,74 +368,76 @@ function AppointmentsTab() {
     setLoading(true);
     setFetchErr("");
     try {
-      // Join path: appointments → customers (direct FK)
-      //            appointments → service_requests → vehicles (no direct vehicle FK on appointments)
+      // Step 1: Fetch appointments + customers (reliable direct FK)
       let appts = null;
       try {
         appts = await sbFetch(
-          "appointments?select=*,customers(full_name,formatted_address),service_requests(vehicle_id,vehicles(make,model,year,color,license_plate,vehicle_type))&order=scheduled_start.asc&limit=500"
+          "appointments?select=*,customers(full_name,formatted_address)&order=scheduled_start.asc&limit=500"
         );
-      } catch (joinErr) {
-        console.warn("[JECS] Joined fetch failed, trying plain fetch:", joinErr.message);
+      } catch (e) {
+        console.warn("[JECS] appointments fetch failed:", e.message);
+        appts = await sbFetch("appointments?select=*&order=scheduled_start.asc&limit=500") || [];
       }
 
-      // Fallback: plain fetch if join failed
-      if (!appts) {
-        appts = await sbFetch(
-          "appointments?select=*&order=scheduled_start.asc&limit=500"
-        ) || [];
-      }
-
+      // Step 2: For each appointment, resolve vehicle via service_request_id
+      // appointments.service_request_id → service_requests.vehicle_id → vehicles.*
       const enriched = await Promise.all((appts || []).map(async (a) => {
-        let custName    = a.customers?.full_name         || null;
-        let custAddr    = a.customers?.formatted_address || null;
+        const custName    = a.customers?.full_name         || null;
+        const custAddr    = a.customers?.formatted_address || null;
+        let vehicleSum    = null;
+        let licensePlate  = null;
+        let vehicleType   = null;
 
-        // Vehicle comes via service_requests join
-        const vObj      = a.service_requests?.vehicles || null;
-        let vehicleSum  = vObj
-          ? [vObj.year, vObj.color, vObj.make, vObj.model].filter(Boolean).join(" ")
-          : null;
-        let licensePlate = vObj?.license_plate || null;
-        let vehicleType  = vObj?.vehicle_type  || null;
-
-        // Fallback: fetch customer separately
-        if (!custName && a.customer_id) {
+        // Only attempt vehicle lookup if we have a service_request_id
+        if (a.service_request_id) {
           try {
-            const custs = await sbFetch(
-              `customers?customer_id=eq.${a.customer_id}&select=full_name,formatted_address&limit=1`
-            );
-            if (custs?.[0]) { custName = custs[0].full_name; custAddr = custs[0].formatted_address; }
-          } catch (_) {}
-        }
-
-        // Fallback: fetch vehicle via service_request → vehicle_id
-        if (!vehicleSum && a.service_request_id) {
-          try {
+            // Fetch service_request to get vehicle_id
             const srs = await sbFetch(
               `service_requests?request_id=eq.${a.service_request_id}&select=vehicle_id&limit=1`
             );
             const vid = srs?.[0]?.vehicle_id;
             if (vid) {
+              // Fetch vehicle directly by vehicle_id
               const vehs = await sbFetch(
                 `vehicles?vehicle_id=eq.${vid}&select=make,model,year,color,license_plate,vehicle_type&limit=1`
               );
               if (vehs?.[0]) {
                 const v    = vehs[0];
-                vehicleSum  = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ");
+                vehicleSum  = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ") || null;
                 licensePlate = v.license_plate || null;
                 vehicleType  = v.vehicle_type  || null;
               }
             }
+          } catch (e) {
+            console.warn("[JECS] vehicle lookup failed for appt", a.appointment_id, e.message);
+          }
+        }
+
+        // Also try looking up vehicle directly by customer_id as last resort
+        if (!vehicleSum && !vehicleType && a.customer_id) {
+          try {
+            const vehs = await sbFetch(
+              `vehicles?customer_id=eq.${a.customer_id}&select=make,model,year,color,license_plate,vehicle_type&order=created_at.desc&limit=1`
+            );
+            if (vehs?.[0]) {
+              const v    = vehs[0];
+              vehicleSum  = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ") || null;
+              licensePlate = v.license_plate || null;
+              vehicleType  = v.vehicle_type  || null;
+            }
           } catch (_) {}
         }
 
+        // Build best display string
+        const vehicleDisplay = vehicleSum || vehicleType || null;
+
         return {
           ...a,
-          customer_name:    custName    || "—",
-          customer_address: custAddr    || "",
-          vehicle_summary:  vehicleSum  || vehicleType || "—",
-          license_plate:    licensePlate || "—",
-          vehicle_type:     vehicleType  || "—",
+          customer_name:    custName       || "—",
+          customer_address: custAddr       || "",
+          vehicle_summary:  vehicleDisplay || "—",
+          license_plate:    licensePlate   || "—",
+          vehicle_type:     vehicleType    || "—",
         };
       }));
 
@@ -926,23 +928,52 @@ function WashProTab() {
     setLoading(true);
     try {
       const appts = await sbFetch(
-        `appointments?select=*,customers(full_name,formatted_address,phone_number),service_requests(vehicle_id,vehicles(make,model,year,color,license_plate,vehicle_type))&scheduled_start=gte.${selectedDate}T00:00:00&scheduled_start=lte.${selectedDate}T23:59:59&order=scheduled_start.asc&limit=100`
+        `appointments?select=*,customers(full_name,formatted_address,phone_number)&scheduled_start=gte.${selectedDate}T00:00:00&scheduled_start=lte.${selectedDate}T23:59:59&order=scheduled_start.asc&limit=100`
       ) || [];
-      setRows(appts.map(a => {
-        const vObj = a.service_requests?.vehicles || null;
-        const vehicleSum = vObj
-          ? [vObj.year, vObj.color, vObj.make, vObj.model].filter(Boolean).join(" ")
-          : null;
+
+      const enriched = await Promise.all(appts.map(async (a) => {
+        let vehicleSum = null, licensePlate = null, vehicleType = null;
+
+        if (a.service_request_id) {
+          try {
+            const srs = await sbFetch(`service_requests?request_id=eq.${a.service_request_id}&select=vehicle_id&limit=1`);
+            const vid = srs?.[0]?.vehicle_id;
+            if (vid) {
+              const vehs = await sbFetch(`vehicles?vehicle_id=eq.${vid}&select=make,model,year,color,license_plate,vehicle_type&limit=1`);
+              if (vehs?.[0]) {
+                const v = vehs[0];
+                vehicleSum   = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ") || null;
+                licensePlate = v.license_plate || null;
+                vehicleType  = v.vehicle_type  || null;
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (!vehicleSum && !vehicleType && a.customer_id) {
+          try {
+            const vehs = await sbFetch(`vehicles?customer_id=eq.${a.customer_id}&select=make,model,year,color,license_plate,vehicle_type&order=created_at.desc&limit=1`);
+            if (vehs?.[0]) {
+              const v = vehs[0];
+              vehicleSum   = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ") || null;
+              licensePlate = v.license_plate || null;
+              vehicleType  = v.vehicle_type  || null;
+            }
+          } catch (_) {}
+        }
+
         return {
           ...a,
           customer_name:    a.customers?.full_name         || "—",
           customer_address: a.customers?.formatted_address || "—",
           customer_phone:   a.customers?.phone_number      || "—",
-          vehicle_summary:  vehicleSum || vObj?.vehicle_type || "—",
-          vehicle_type:     vObj?.vehicle_type  || "—",
-          license_plate:    vObj?.license_plate || "—",
+          vehicle_summary:  vehicleSum || vehicleType      || "—",
+          vehicle_type:     vehicleType                    || "—",
+          license_plate:    licensePlate                   || "—",
         };
       }));
+
+      setRows(enriched);
     } catch (e) { console.error(e); setRows([]); }
     setLoading(false);
   }, [selectedDate]);
