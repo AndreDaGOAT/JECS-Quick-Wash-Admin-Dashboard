@@ -310,12 +310,7 @@ function ApptRow({ appt, onAdvance, onSetStatus, onEdit, compact }) {
       </td>
       {!compact && (
         <td style={td}>
-          <div>{appt.vehicle_summary !== "—" ? appt.vehicle_summary : appt.vehicle_type !== "—" ? appt.vehicle_type : "—"}</div>
-          {appt.vehicle_type && appt.vehicle_type !== "—" && appt.vehicle_type !== appt.vehicle_summary && (
-            <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>
-              {appt.vehicle_type}
-            </div>
-          )}
+          <div>{appt.vehicle_summary !== "—" ? appt.vehicle_summary : "—"}</div>
           {appt.license_plate && appt.license_plate !== "—" && (
             <div style={{ fontSize: 11, color: C.gold, fontWeight: 700, marginTop: 2 }}>
               🪪 {appt.license_plate}
@@ -388,22 +383,24 @@ function AppointmentsTab() {
         let licensePlate  = null;
         let vehicleType   = null;
 
+        console.log(`[JECS] Appt ${a.appointment_id?.slice(0,8)} | service_request_id: ${a.service_request_id} | customer_id: ${a.customer_id}`);
+
         // Only attempt vehicle lookup if we have a service_request_id
         if (a.service_request_id) {
           try {
-            // Fetch service_request to get vehicle_id
             const srs = await sbFetch(
               `service_requests?request_id=eq.${a.service_request_id}&select=vehicle_id&limit=1`
             );
             const vid = srs?.[0]?.vehicle_id;
+            console.log(`[JECS]   → service_request vehicle_id: ${vid}`);
             if (vid) {
-              // Fetch vehicle directly by vehicle_id
               const vehs = await sbFetch(
-                `vehicles?vehicle_id=eq.${vid}&select=make,model,year,color,license_plate,vehicle_type&limit=1`
+                `vehicles?vehicle_id=eq.${vid}&select=vehicle_type,color,license_plate&limit=1`
               );
+              console.log(`[JECS]   → vehicle record:`, vehs?.[0]);
               if (vehs?.[0]) {
                 const v    = vehs[0];
-                vehicleSum  = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ") || null;
+                vehicleSum   = v.vehicle_type || v.color || null;
                 licensePlate = v.license_plate || null;
                 vehicleType  = v.vehicle_type  || null;
               }
@@ -413,22 +410,24 @@ function AppointmentsTab() {
           }
         }
 
-        // Also try looking up vehicle directly by customer_id as last resort
+        // Fallback: lookup by customer_id
         if (!vehicleSum && !vehicleType && a.customer_id) {
           try {
             const vehs = await sbFetch(
-              `vehicles?customer_id=eq.${a.customer_id}&select=make,model,year,color,license_plate,vehicle_type&order=created_at.desc&limit=1`
+              `vehicles?customer_id=eq.${a.customer_id}&select=vehicle_type,color,license_plate&order=created_at.desc&limit=1`
             );
+            console.log(`[JECS]   → customer vehicle fallback:`, vehs?.[0]);
             if (vehs?.[0]) {
               const v    = vehs[0];
-              vehicleSum  = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ") || null;
+              vehicleSum   = v.vehicle_type || v.color || null;
               licensePlate = v.license_plate || null;
               vehicleType  = v.vehicle_type  || null;
             }
           } catch (_) {}
         }
 
-        // Build best display string
+        console.log(`[JECS]   → final: summary="${vehicleSum}" type="${vehicleType}" plate="${licensePlate}"`);
+
         const vehicleDisplay = vehicleSum || vehicleType || null;
 
         return {
@@ -592,7 +591,68 @@ function AppointmentsTab() {
   );
 }
 
-// ── Appointment Edit Modal ────────────────────────────────────────────────────
+// ── Vehicle Lookup — fetches directly from Supabase regardless of join chain ──
+function VehicleLookup({ customerId, serviceRequestId }) {
+  const [veh, setVeh]       = useState(null);
+  const [status, setStatus] = useState("loading");
+
+  useEffect(() => {
+    if (!customerId && !serviceRequestId) { setStatus("no-ids"); return; }
+    (async () => {
+      setStatus("loading");
+      try {
+        // Try via service_request → vehicle_id first
+        if (serviceRequestId) {
+          const srs = await sbFetch(`service_requests?request_id=eq.${serviceRequestId}&select=vehicle_id&limit=1`);
+          const vid = srs?.[0]?.vehicle_id;
+          if (vid) {
+            const vehs = await sbFetch(`vehicles?vehicle_id=eq.${vid}&select=vehicle_type,color,license_plate,vehicle_id&limit=1`);
+            if (vehs?.[0]) { setVeh(vehs[0]); setStatus("found"); return; }
+          }
+        }
+        // Fallback: most recent vehicle by customer
+        if (customerId) {
+          const vehs = await sbFetch(`vehicles?customer_id=eq.${customerId}&select=vehicle_type,color,license_plate,vehicle_id&order=created_at.desc&limit=1`);
+          if (vehs?.[0]) { setVeh(vehs[0]); setStatus("found"); return; }
+        }
+        setStatus("not-found");
+      } catch (e) {
+        console.error("[JECS] VehicleLookup error:", e.message);
+        setStatus("error");
+      }
+    })();
+  }, [customerId, serviceRequestId]);
+
+  const C_lbl = { fontSize: 10, fontWeight: 700, color: "#7A90B0", letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 2 };
+
+  if (status === "loading") return <div style={{ fontSize: 12, color: "#7A90B0" }}>Loading vehicle…</div>;
+  if (status === "not-found") return <div style={{ fontSize: 12, color: "#EF4444" }}>No vehicle record found in Supabase for this customer.</div>;
+  if (status === "error")     return <div style={{ fontSize: 12, color: "#EF4444" }}>Error fetching vehicle data.</div>;
+  if (status === "no-ids")    return <div style={{ fontSize: 12, color: "#7A90B0" }}>No customer or service request linked.</div>;
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginTop: 8 }}>
+      <div>
+        <span style={C_lbl}>Vehicle</span>
+        <span style={{ fontSize: 13, color: "#F0F4FF" }}>{veh.vehicle_type || "—"}</span>
+      </div>
+      <div>
+        <span style={C_lbl}>Color</span>
+        <span style={{ fontSize: 13, color: "#F0F4FF" }}>{veh.color || "—"}</span>
+      </div>
+      <div>
+        <span style={C_lbl}>License Plate</span>
+        <span style={{ fontSize: 13, color: "#D4A843", fontWeight: 700 }}>{veh.license_plate ? `🪪 ${veh.license_plate}` : "—"}</span>
+      </div>
+      <div>
+        <span style={C_lbl}>Vehicle ID</span>
+        <span style={{ fontSize: 10, color: "#7A90B0", fontFamily: "monospace" }}>{veh.vehicle_id?.slice(0,8)}…</span>
+      </div>
+    </div>
+  );
+}
+
+
 function AppointmentModal({ appt, onClose, onSave }) {
   const [form, setForm] = useState({
     scheduled_start:       appt?.scheduled_start       || "",
@@ -669,14 +729,11 @@ function AppointmentModal({ appt, onClose, onSave }) {
             )}
           </div>
           <div>
-            <div style={lbl}>Vehicle</div>
-            <div style={{ color: C.text }}>{appt?.vehicle_summary && appt.vehicle_summary !== "—" ? appt.vehicle_summary : appt?.vehicle_type || "—"}</div>
-            {appt?.vehicle_type && appt.vehicle_type !== "—" && appt.vehicle_type !== appt?.vehicle_summary && (
-              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{appt.vehicle_type}</div>
-            )}
-            {appt?.license_plate && appt.license_plate !== "—" && (
-              <div style={{ color: C.gold, fontWeight: 700, marginTop: 4 }}>🪪 {appt.license_plate}</div>
-            )}
+            <div style={lbl}>Vehicle & Plate</div>
+            <VehicleLookup
+              customerId={appt?.customer_id}
+              serviceRequestId={appt?.service_request_id}
+            />
           </div>
         </div>
 
@@ -939,10 +996,10 @@ function WashProTab() {
             const srs = await sbFetch(`service_requests?request_id=eq.${a.service_request_id}&select=vehicle_id&limit=1`);
             const vid = srs?.[0]?.vehicle_id;
             if (vid) {
-              const vehs = await sbFetch(`vehicles?vehicle_id=eq.${vid}&select=make,model,year,color,license_plate,vehicle_type&limit=1`);
+              const vehs = await sbFetch(`vehicles?vehicle_id=eq.${vid}&select=vehicle_type,color,license_plate&limit=1`);
               if (vehs?.[0]) {
                 const v = vehs[0];
-                vehicleSum   = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ") || null;
+                vehicleSum   = v.vehicle_type || v.color || null;
                 licensePlate = v.license_plate || null;
                 vehicleType  = v.vehicle_type  || null;
               }
@@ -952,10 +1009,10 @@ function WashProTab() {
 
         if (!vehicleSum && !vehicleType && a.customer_id) {
           try {
-            const vehs = await sbFetch(`vehicles?customer_id=eq.${a.customer_id}&select=make,model,year,color,license_plate,vehicle_type&order=created_at.desc&limit=1`);
+            const vehs = await sbFetch(`vehicles?customer_id=eq.${a.customer_id}&select=vehicle_type,color,license_plate&order=created_at.desc&limit=1`);
             if (vehs?.[0]) {
               const v = vehs[0];
-              vehicleSum   = [v.year, v.color, v.make, v.model].filter(Boolean).join(" ") || null;
+              vehicleSum   = v.vehicle_type || v.color || null;
               licensePlate = v.license_plate || null;
               vehicleType  = v.vehicle_type  || null;
             }
@@ -1051,10 +1108,7 @@ function WashProTab() {
                   <div>
                     <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 2 }}>Vehicle</div>
                     <div style={{ color: C.text }}>
-                    {a.vehicle_summary !== "—" ? a.vehicle_summary : a.vehicle_type !== "—" ? a.vehicle_type : "—"}
-                    {a.vehicle_type && a.vehicle_type !== "—" && a.vehicle_type !== a.vehicle_summary && (
-                      <span style={{ color: C.textMuted, fontSize: 11 }}> · {a.vehicle_type}</span>
-                    )}
+                    {a.vehicle_summary !== "—" ? a.vehicle_summary : "—"}
                   </div>
                   </div>
                   <div>
