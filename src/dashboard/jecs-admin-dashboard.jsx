@@ -400,7 +400,7 @@ function AppointmentsTab() {
               console.log(`[JECS]   → vehicle record:`, vehs?.[0]);
               if (vehs?.[0]) {
                 const v    = vehs[0];
-                vehicleSum   = v.vehicle_type || v.color || null;
+                vehicleSum   = v.vehicle_type || null;
                 licensePlate = v.license_plate || null;
                 vehicleType  = v.vehicle_type  || null;
               }
@@ -419,7 +419,7 @@ function AppointmentsTab() {
             console.log(`[JECS]   → customer vehicle fallback:`, vehs?.[0]);
             if (vehs?.[0]) {
               const v    = vehs[0];
-              vehicleSum   = v.vehicle_type || v.color || null;
+              vehicleSum   = v.vehicle_type || null;
               licensePlate = v.license_plate || null;
               vehicleType  = v.vehicle_type  || null;
             }
@@ -999,7 +999,7 @@ function WashProTab() {
               const vehs = await sbFetch(`vehicles?vehicle_id=eq.${vid}&select=vehicle_type,color,license_plate&limit=1`);
               if (vehs?.[0]) {
                 const v = vehs[0];
-                vehicleSum   = v.vehicle_type || v.color || null;
+                vehicleSum   = v.vehicle_type || null;
                 licensePlate = v.license_plate || null;
                 vehicleType  = v.vehicle_type  || null;
               }
@@ -1012,7 +1012,7 @@ function WashProTab() {
             const vehs = await sbFetch(`vehicles?customer_id=eq.${a.customer_id}&select=vehicle_type,color,license_plate&order=created_at.desc&limit=1`);
             if (vehs?.[0]) {
               const v = vehs[0];
-              vehicleSum   = v.vehicle_type || v.color || null;
+              vehicleSum   = v.vehicle_type || null;
               licensePlate = v.license_plate || null;
               vehicleType  = v.vehicle_type  || null;
             }
