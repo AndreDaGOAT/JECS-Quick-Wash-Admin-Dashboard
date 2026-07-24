@@ -143,7 +143,7 @@ const PATHS = {
   car:          "M5 17H3v-4l3-6h12l3 6v4h-2m-9 0h4m-4 0a2 2 0 100 4 2 2 0 000-4zm4 0a2 2 0 100 4 2 2 0 000-4z",
   search:       "M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z",
   clock:        "M12 2a10 10 0 110 20A10 10 0 0112 2zm0 5v5l3 3",
-  pin:          "M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 1118 0zM12 10a2 2 0 110-4 2 2 0 010 4z",
+  packages:     "M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2zM4 5h16M9 3h6",
 };
 
 function Icon({ name, size = 16, color = "currentColor" }) {
@@ -202,8 +202,8 @@ function Login({ onLogin }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: C.base, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,sans-serif" }}>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderTop: `3px solid ${C.gold}`, borderRadius: 12, padding: "2.5rem", width: 380 }}>
+    <div style={{ minHeight: "100vh", background: C.base, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,sans-serif", padding: "1rem" }}>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderTop: `3px solid ${C.gold}`, borderRadius: 12, padding: "2.5rem", width: "100%", maxWidth: 420, boxShadow: "0 24px 60px #00000055" }}>
         <div style={{ textAlign: "center", marginBottom: "2rem" }}>
           <div style={{ fontSize: 32, fontWeight: 800, color: C.gold, letterSpacing: "0.02em" }}>JECS</div>
           <div style={{ fontSize: 13, color: C.textMuted, marginTop: 4 }}>Quick Wash · Admin Portal</div>
@@ -1305,12 +1305,345 @@ function CustomersTab() {
   );
 }
 
+// ── Service Packages Tab ──────────────────────────────────────────────────────
+function ServicePackagesTab() {
+  const [packages, setPackages] = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [modal, setModal]       = useState(null); // null | 'form'
+  const [selected, setSelected] = useState(null);
+  const [toast, setToast]       = useState("");
+
+  const showToast = m => { setToast(m); setTimeout(() => setToast(""), 3000); };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setPackages(await sbFetch("service_packages?select=*&order=package_name.asc") || []); }
+    catch (_) { setPackages([]); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSave(form) {
+    const payload = {
+      ...form,
+      base_price:                  form.base_price                  === "" ? null : parseFloat(form.base_price),
+      estimated_duration_minutes:  form.estimated_duration_minutes  === "" ? null : parseInt(form.estimated_duration_minutes, 10),
+      minimum_dry_days:            form.minimum_dry_days            === "" ? null : parseInt(form.minimum_dry_days, 10),
+      requires_dry_window:         form.requires_dry_window === true || form.requires_dry_window === "true",
+      active:                      form.active === true || form.active === "true",
+    };
+    if (selected) {
+      await sbFetch(`service_packages?package_id=eq.${selected.package_id}`, {
+        method: "PATCH", body: JSON.stringify(payload),
+      });
+      showToast("Package updated.");
+    } else {
+      await sbFetch("service_packages", { method: "POST", body: JSON.stringify(payload) });
+      showToast("Package created.");
+    }
+    load();
+  }
+
+  async function toggleActive(pkg) {
+    await sbFetch(`service_packages?package_id=eq.${pkg.package_id}`, {
+      method: "PATCH", body: JSON.stringify({ active: !pkg.active }),
+    });
+    showToast(`${pkg.package_name} ${!pkg.active ? "activated" : "deactivated"}.`);
+    load();
+  }
+
+  const inp = { background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6, padding: "7px 11px", color: C.text, fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box" };
+  const lbl = { fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 4 };
+  const td  = { padding: "13px 16px", borderBottom: `1px solid ${C.border}22`, verticalAlign: "middle", color: C.text, fontSize: 13 };
+  const th  = { padding: "9px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", background: `${C.border}55`, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
+
+  return (
+    <div>
+      <Toast msg={toast} />
+
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+        <div style={{ fontSize: 20, fontWeight: 700, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+          <Icon name="packages" size={20} color={C.gold} /> Service Packages
+          <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 400 }}>
+            · {packages.filter(p => p.active).length} active
+          </span>
+        </div>
+        <button style={btn("gold")} onClick={() => { setSelected(null); setModal("form"); }}>
+          <Icon name="plus" size={13} /> New Package
+        </button>
+      </div>
+
+      {/* Info banner */}
+      <div style={{ background: `${C.gold}11`, border: `1px solid ${C.gold}33`, borderRadius: 8, padding: "10px 16px", marginBottom: "1.5rem", fontSize: 13, color: C.gold, display: "flex", alignItems: "center", gap: 8 }}>
+        <Icon name="alert" size={14} color={C.gold} />
+        Changes here update Supabase immediately. Update the package UUIDs in <code style={{ background: `${C.gold}22`, padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>index.html</code> on the customer site if you add new packages.
+      </div>
+
+      {/* Package cards grid */}
+      {loading ? (
+        <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted }}>Loading packages…</div>
+      ) : packages.length === 0 ? (
+        <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted, fontSize: 13 }}>No packages found. Create your first one.</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1.25rem", marginBottom: "2rem" }}>
+          {packages.map(pkg => (
+            <div key={pkg.package_id} style={{
+              background: C.surfaceAlt, border: `1px solid ${pkg.active ? C.border : C.border + "66"}`,
+              borderTop: `3px solid ${pkg.active ? C.gold : C.border}`,
+              borderRadius: 10, padding: "1.25rem",
+              opacity: pkg.active ? 1 : 0.6, transition: "opacity 0.15s",
+            }}>
+              {/* Card header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>{pkg.package_name}</div>
+                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2, fontFamily: "monospace" }}>
+                    {pkg.package_id?.slice(0, 8)}…
+                  </div>
+                </div>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 12,
+                  background: pkg.active ? `${C.success}22` : `${C.textMuted}22`,
+                  color: pkg.active ? C.success : C.textMuted,
+                  border: `1px solid ${pkg.active ? C.success + "44" : C.border}`,
+                  textTransform: "uppercase", letterSpacing: "0.07em",
+                }}>
+                  {pkg.active ? "Active" : "Inactive"}
+                </span>
+              </div>
+
+              {/* Description */}
+              {pkg.description && (
+                <p style={{ fontSize: 12, color: C.textMuted, marginBottom: "0.75rem", lineHeight: 1.5 }}>
+                  {pkg.description}
+                </p>
+              )}
+
+              {/* Pricing & timing */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginBottom: "0.75rem" }}>
+                <div style={{ background: C.surface, borderRadius: 7, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 3 }}>Base Price</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: C.gold }}>
+                    {pkg.base_price != null ? `$${Number(pkg.base_price).toFixed(2)}` : "—"}
+                  </div>
+                </div>
+                <div style={{ background: C.surface, borderRadius: 7, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 3 }}>Duration</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: C.accentLight }}>
+                    {pkg.estimated_duration_minutes != null ? `${pkg.estimated_duration_minutes}m` : "—"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Dry window info */}
+              {pkg.requires_dry_window && (
+                <div style={{ fontSize: 11, color: C.warning, background: `${C.warning}11`, border: `1px solid ${C.warning}33`, borderRadius: 6, padding: "5px 9px", marginBottom: "0.75rem" }}>
+                  ☀️ Requires {pkg.minimum_dry_days || 0} dry day{pkg.minimum_dry_days !== 1 ? "s" : ""} before service
+                </div>
+              )}
+
+              {/* Actions */}
+              <div style={{ display: "flex", gap: 8, marginTop: "0.75rem" }}>
+                <button style={{ ...btn("ghost", true), flex: 1, justifyContent: "center" }}
+                  onClick={() => { setSelected(pkg); setModal("form"); }}>
+                  <Icon name="edit" size={12} /> Edit
+                </button>
+                <button
+                  style={{ ...btn(pkg.active ? "danger" : "success", true), flex: 1, justifyContent: "center" }}
+                  onClick={() => toggleActive(pkg)}>
+                  {pkg.active ? "Deactivate" : "Activate"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Package table for quick price reference */}
+      {packages.length > 0 && (
+        <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ padding: "1rem 1.5rem", borderBottom: `1px solid ${C.border}`, fontSize: 13, fontWeight: 600, color: C.textMuted }}>
+            Price Sheet — All Packages
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr>{["Package", "Price", "Duration", "Dry Window", "Min Dry Days", "Status"].map(h => (
+                <th key={h} style={th}>{h}</th>
+              ))}</tr>
+            </thead>
+            <tbody>
+              {packages.map(pkg => (
+                <tr key={pkg.package_id}>
+                  <td style={td}><div style={{ fontWeight: 600 }}>{pkg.package_name}</div></td>
+                  <td style={{ ...td, color: C.gold, fontWeight: 700 }}>
+                    {pkg.base_price != null ? `$${Number(pkg.base_price).toFixed(2)}` : "—"}
+                  </td>
+                  <td style={td}>{pkg.estimated_duration_minutes != null ? `${pkg.estimated_duration_minutes} min` : "—"}</td>
+                  <td style={td}>
+                    <span style={{ color: pkg.requires_dry_window ? C.warning : C.textMuted }}>
+                      {pkg.requires_dry_window ? "Yes" : "No"}
+                    </span>
+                  </td>
+                  <td style={td}>{pkg.minimum_dry_days ?? "0"} day{pkg.minimum_dry_days !== 1 ? "s" : ""}</td>
+                  <td style={td}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 12,
+                      background: pkg.active ? `${C.success}22` : `${C.textMuted}22`,
+                      color: pkg.active ? C.success : C.textMuted,
+                    }}>
+                      {pkg.active ? "Active" : "Inactive"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Edit / Create modal */}
+      {modal === "form" && (
+        <PackageModal
+          pkg={selected}
+          onClose={() => { setModal(null); setSelected(null); }}
+          onSave={async (form) => { await handleSave(form); setModal(null); setSelected(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Package Modal ─────────────────────────────────────────────────────────────
+function PackageModal({ pkg, onClose, onSave }) {
+  const [form, setForm] = useState({
+    package_name:               pkg?.package_name               || "",
+    description:                pkg?.description                || "",
+    base_price:                  pkg?.base_price                 ?? "",
+    estimated_duration_minutes:  pkg?.estimated_duration_minutes ?? "",
+    requires_dry_window:         pkg?.requires_dry_window        ?? false,
+    minimum_dry_days:            pkg?.minimum_dry_days           ?? 0,
+    active:                      pkg?.active                     ?? true,
+  });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr]       = useState("");
+
+  const inp = { background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6, padding: "7px 11px", color: C.text, fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box" };
+  const lbl = { fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 4 };
+
+  async function save() {
+    if (!form.package_name.trim()) { setErr("Package name is required."); return; }
+    if (form.base_price !== "" && isNaN(parseFloat(form.base_price))) { setErr("Price must be a number."); return; }
+    setSaving(true); setErr("");
+    try { await onSave(form); }
+    catch (e) { setErr(e.message || "Save failed."); setSaving(false); }
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#00000099", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, width: 560, maxWidth: "95vw", maxHeight: "92vh", overflowY: "auto", padding: "2rem", boxShadow: "0 25px 60px #00000099" }}>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+          <div style={{ fontSize: 17, fontWeight: 700, color: C.text }}>
+            {pkg ? "Edit Package" : "New Package"}
+          </div>
+          <button style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted }} onClick={onClose}>
+            <Icon name="x" size={18} />
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+
+          {/* Package name — full width */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={lbl}>Package Name <span style={{ color: C.danger }}>*</span></label>
+            <input style={inp} type="text" placeholder="e.g. Quick Wash"
+              value={form.package_name}
+              onChange={e => setForm(f => ({ ...f, package_name: e.target.value }))} />
+          </div>
+
+          {/* Description — full width */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={lbl}>Description</label>
+            <textarea style={{ ...inp, minHeight: 72, resize: "vertical" }}
+              placeholder="Brief description shown to customers…"
+              value={form.description}
+              onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+          </div>
+
+          {/* Price */}
+          <div>
+            <label style={lbl}>Base Price ($)</label>
+            <input style={inp} type="number" min="0" step="0.01" placeholder="0.00"
+              value={form.base_price}
+              onChange={e => setForm(f => ({ ...f, base_price: e.target.value }))} />
+          </div>
+
+          {/* Duration */}
+          <div>
+            <label style={lbl}>Duration (minutes)</label>
+            <input style={inp} type="number" min="1" placeholder="e.g. 20"
+              value={form.estimated_duration_minutes}
+              onChange={e => setForm(f => ({ ...f, estimated_duration_minutes: e.target.value }))} />
+          </div>
+
+          {/* Requires dry window */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={{ ...lbl, display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!form.requires_dry_window}
+                onChange={e => setForm(f => ({ ...f, requires_dry_window: e.target.checked }))}
+                style={{ width: 15, height: 15, accentColor: C.warning }} />
+              <span>Requires Dry Window (weather-dependent service)</span>
+            </label>
+          </div>
+
+          {/* Minimum dry days — only show if dry window required */}
+          {form.requires_dry_window && (
+            <div>
+              <label style={lbl}>Minimum Dry Days Before Service</label>
+              <input style={inp} type="number" min="0" max="14" placeholder="0"
+                value={form.minimum_dry_days}
+                onChange={e => setForm(f => ({ ...f, minimum_dry_days: e.target.value }))} />
+            </div>
+          )}
+
+          {/* Active toggle */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={{ ...lbl, display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!form.active}
+                onChange={e => setForm(f => ({ ...f, active: e.target.checked }))}
+                style={{ width: 15, height: 15, accentColor: C.success }} />
+              <span>Active — visible on booking form</span>
+            </label>
+          </div>
+        </div>
+
+        {err && (
+          <div style={{ marginTop: "1rem", fontSize: 12, color: C.danger, display: "flex", gap: 6, alignItems: "center" }}>
+            <Icon name="alert" size={13} color={C.danger} /> {err}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: "1.5rem" }}>
+          <button style={btn("ghost")} onClick={onClose}>Cancel</button>
+          <button style={btn("gold")} onClick={save} disabled={saving}>
+            {saving ? "Saving…" : pkg ? "Update Package" : "Create Package"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── App Shell ─────────────────────────────────────────────────────────────────
 const NAV = [
-  { id: "dashboard",    label: "Dashboard",    icon: "dashboard" },
-  { id: "appointments", label: "Appointments", icon: "appointments" },
-  { id: "washpro",      label: "Wash Pro View",icon: "washpro" },
-  { id: "customers",    label: "Customers",    icon: "customers" },
+  { id: "dashboard",    label: "Dashboard",        icon: "dashboard" },
+  { id: "appointments", label: "Appointments",     icon: "appointments" },
+  { id: "washpro",      label: "Wash Pro View",    icon: "washpro" },
+  { id: "customers",    label: "Customers",        icon: "customers" },
+  { id: "packages",     label: "Service Packages", icon: "packages" },
 ];
 
 const NAV_COLORS = {
@@ -1318,6 +1651,7 @@ const NAV_COLORS = {
   appointments: C.accentLight,
   washpro:      C.success,
   customers:    C.gold,
+  packages:     C.gold,
 };
 
 export default function App() {
@@ -1372,6 +1706,7 @@ export default function App() {
           {tab === "appointments" && <AppointmentsTab />}
           {tab === "washpro"      && <WashProTab />}
           {tab === "customers"    && <CustomersTab />}
+          {tab === "packages"     && <ServicePackagesTab />}
         </main>
       </div>
     </div>
