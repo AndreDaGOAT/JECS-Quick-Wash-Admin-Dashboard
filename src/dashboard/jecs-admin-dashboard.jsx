@@ -144,6 +144,7 @@ const PATHS = {
   search:       "M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z",
   clock:        "M12 2a10 10 0 110 20A10 10 0 0112 2zm0 5v5l3 3",
   packages:     "M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2zM4 5h16M9 3h6",
+  washpros:     "M9 11a4 4 0 100-8 4 4 0 000 8zm8 0a3 3 0 100-6 3 3 0 000 6zM3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2M19 14v4m0 0v4m0-4h4m-4 0h-4",
 };
 
 function Icon({ name, size = 16, color = "currentColor" }) {
@@ -1637,13 +1638,422 @@ function PackageModal({ pkg, onClose, onSave }) {
   );
 }
 
+// ── Wash Pro Profiles Tab ─────────────────────────────────────────────────────
+const ONBOARDING_STATUSES  = ["pending","submitted","under_review","approved","rejected","suspended"];
+const W9_STATUSES          = ["not_required","required","submitted","verified","needs_correction"];
+const AGREEMENT_STATUSES   = ["required","submitted","signed","expired"];
+const INSURANCE_STATUSES   = ["not_required","required","submitted","verified","expired"];
+const BGCHECK_STATUSES     = ["not_required","required","submitted","passed","failed"];
+const WORKER_TYPES         = ["employee","independent_contractor"];
+
+const ONBOARDING_COLOR = {
+  pending:      "#7A90B0",
+  submitted:    "#0284C7",
+  under_review: "#8B5CF6",
+  approved:     "#10B981",
+  rejected:     "#EF4444",
+  suspended:    "#F59E0B",
+};
+
+const STATUS_BADGE_COLOR = {
+  not_required:    { bg: "#1C2A3E", col: "#7A90B0" },
+  required:        { bg: "#F59E0B22", col: "#F59E0B" },
+  submitted:       { bg: "#0284C722", col: "#0284C7" },
+  verified:        { bg: "#10B98122", col: "#10B981" },
+  signed:          { bg: "#10B98122", col: "#10B981" },
+  passed:          { bg: "#10B98122", col: "#10B981" },
+  needs_correction:{ bg: "#EF444422", col: "#EF4444" },
+  failed:          { bg: "#EF444422", col: "#EF4444" },
+  expired:         { bg: "#F59E0B22", col: "#F59E0B" },
+};
+
+function statusDot(val) {
+  const s = STATUS_BADGE_COLOR[val] || { bg: "#1C2A3E", col: "#7A90B0" };
+  return (
+    <span style={{
+      display: "inline-block", padding: "2px 8px", borderRadius: 10,
+      fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+      letterSpacing: "0.05em", background: s.bg, color: s.col,
+    }}>{(val || "—").replace(/_/g, " ")}</span>
+  );
+}
+
+function WashProProfileModal({ profile, onClose, onSave }) {
+  const isNew = !profile;
+  const [form, setForm] = useState({
+    worker_type:              profile?.worker_type              || "independent_contractor",
+    legal_name:               profile?.legal_name               || "",
+    business_name:            profile?.business_name            || "",
+    email:                    profile?.email                    || "",
+    phone_number:             profile?.phone_number             || "",
+    onboarding_status:        profile?.onboarding_status        || "pending",
+    w9_status:                profile?.w9_status                || "required",
+    agreement_status:         profile?.agreement_status         || "required",
+    insurance_status:         profile?.insurance_status         || "not_required",
+    background_check_status:  profile?.background_check_status  || "not_required",
+    active:                   profile?.active                   ?? false,
+  });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr]       = useState("");
+
+  const inp = { background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6, padding: "7px 11px", color: C.text, fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box" };
+  const lbl = { fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 4 };
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  async function save() {
+    if (!form.legal_name.trim()) { setErr("Legal name is required."); return; }
+    if (!form.email.trim())      { setErr("Email is required."); return; }
+    setSaving(true); setErr("");
+    try { await onSave(form); onClose(); }
+    catch (e) { setErr(e.message || "Save failed."); }
+    finally { setSaving(false); }
+  }
+
+  const sectionHdr = (label) => (
+    <div style={{ fontSize: 10, fontWeight: 800, color: C.textMuted, letterSpacing: "0.1em",
+      textTransform: "uppercase", gridColumn: "1/-1", marginTop: 8,
+      paddingBottom: 6, borderBottom: `1px solid ${C.border}` }}>
+      {label}
+    </div>
+  );
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#00000099", zIndex: 200,
+      display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12,
+        width: 620, maxWidth: "95vw", maxHeight: "92vh", overflowY: "auto",
+        padding: "2rem", boxShadow: "0 25px 60px #00000099" }}>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+          <div style={{ fontSize: 17, fontWeight: 700, color: C.text }}>
+            {isNew ? "New Wash Pro Profile" : `Edit — ${profile.legal_name}`}
+          </div>
+          <button style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted }}
+            onClick={onClose}><Icon name="x" size={18} /></button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+
+          {sectionHdr("Identity")}
+
+          <div style={{ gridColumn: "1/-1" }}>
+            <label style={lbl}>Worker Type</label>
+            <select style={inp} value={form.worker_type} onChange={e => set("worker_type", e.target.value)}>
+              <option value="employee">Employee</option>
+              <option value="independent_contractor">Independent Contractor</option>
+            </select>
+          </div>
+
+          {[
+            { key: "legal_name",    label: "Legal Name",    required: true },
+            { key: "business_name", label: "Business Name (optional)" },
+            { key: "email",         label: "Email",         type: "email", required: true },
+            { key: "phone_number",  label: "Phone Number",  type: "tel" },
+          ].map(f => (
+            <div key={f.key}>
+              <label style={lbl}>{f.label}{f.required && <span style={{ color: C.danger }}> *</span>}</label>
+              <input style={inp} type={f.type || "text"} value={form[f.key] || ""}
+                onChange={e => set(f.key, e.target.value)} />
+            </div>
+          ))}
+
+          {sectionHdr("Onboarding Status")}
+
+          <div style={{ gridColumn: "1/-1" }}>
+            <label style={lbl}>Onboarding Status</label>
+            <select style={{ ...inp, borderColor: ONBOARDING_COLOR[form.onboarding_status] + "88" }}
+              value={form.onboarding_status} onChange={e => set("onboarding_status", e.target.value)}>
+              {ONBOARDING_STATUSES.map(s => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+            </select>
+          </div>
+
+          {sectionHdr("Document & Compliance Status")}
+
+          {[
+            { key: "w9_status",                label: "W9 Status",               options: W9_STATUSES,       show: form.worker_type === "independent_contractor" },
+            { key: "agreement_status",          label: "Agreement Status",        options: AGREEMENT_STATUSES,show: true },
+            { key: "insurance_status",          label: "Insurance Status",        options: INSURANCE_STATUSES,show: true },
+            { key: "background_check_status",   label: "Background Check Status", options: BGCHECK_STATUSES,  show: true },
+          ].filter(f => f.show).map(f => (
+            <div key={f.key}>
+              <label style={lbl}>{f.label}</label>
+              <select style={inp} value={form[f.key]} onChange={e => set(f.key, e.target.value)}>
+                {f.options.map(s => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+              </select>
+            </div>
+          ))}
+
+          {sectionHdr("Account")}
+
+          <div style={{ gridColumn: "1/-1", display: "flex", alignItems: "center", gap: 12 }}>
+            <label style={{ ...lbl, margin: 0 }}>Active</label>
+            <input type="checkbox" checked={form.active} onChange={e => set("active", e.target.checked)}
+              style={{ width: 18, height: 18, cursor: "pointer", accentColor: C.success }} />
+            <span style={{ fontSize: 12, color: C.textMuted }}>
+              {form.active ? "Wash Pro is active and can log in" : "Wash Pro cannot log in yet"}
+            </span>
+          </div>
+        </div>
+
+        {err && (
+          <div style={{ marginTop: "1rem", fontSize: 12, color: C.danger,
+            display: "flex", gap: 6, alignItems: "center" }}>
+            <Icon name="alert" size={13} color={C.danger} /> {err}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: "1.5rem" }}>
+          <button style={btn("ghost")} onClick={onClose}>Cancel</button>
+          <button style={btn("primary")} onClick={save} disabled={saving}>
+            {saving ? "Saving…" : isNew ? "Create Profile" : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WashProProfilesTab() {
+  const [rows, setRows]         = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [search, setSearch]     = useState("");
+  const [typeFilter, setType]   = useState("all");
+  const [statusFilter, setStat] = useState("all");
+  const [modal, setModal]       = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [toast, setToast]       = useState("");
+  const [hovered, setHovered]   = useState(null);
+
+  const showToast = m => { setToast(m); setTimeout(() => setToast(""), 3000); };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await sbFetch(
+        "wash_pro_profiles?select=*&order=created_at.desc&limit=200"
+      ) || [];
+      setRows(data);
+    } catch (_) { setRows([]); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSave(form) {
+    if (selected) {
+      await sbFetch(`wash_pro_profiles?wash_pro_id=eq.${selected.wash_pro_id}`, {
+        method: "PATCH", body: JSON.stringify({ ...form, updated_at: new Date().toISOString() }),
+      });
+      // Auto-set approved_at when status changes to approved
+      if (form.onboarding_status === "approved" && selected.onboarding_status !== "approved") {
+        await sbFetch(`wash_pro_profiles?wash_pro_id=eq.${selected.wash_pro_id}`, {
+          method: "PATCH", body: JSON.stringify({ approved_at: new Date().toISOString() }),
+        });
+      }
+      showToast("Profile updated.");
+    } else {
+      await sbFetch("wash_pro_profiles", { method: "POST", body: JSON.stringify(form) });
+      showToast("Profile created.");
+    }
+    load();
+  }
+
+  async function toggleActive(row) {
+    await sbFetch(`wash_pro_profiles?wash_pro_id=eq.${row.wash_pro_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ active: !row.active, updated_at: new Date().toISOString() }),
+    });
+    showToast(row.active ? "Deactivated." : "Activated.");
+    load();
+  }
+
+  const filtered = rows.filter(r => {
+    if (typeFilter !== "all" && r.worker_type !== typeFilter) return false;
+    if (statusFilter !== "all" && r.onboarding_status !== statusFilter) return false;
+    const q = search.toLowerCase();
+    return !q || (r.legal_name || "").toLowerCase().includes(q) ||
+      (r.email || "").toLowerCase().includes(q) ||
+      (r.business_name || "").toLowerCase().includes(q);
+  });
+
+  // Summary counts
+  const counts = {};
+  ONBOARDING_STATUSES.forEach(s => { counts[s] = rows.filter(r => r.onboarding_status === s).length; });
+
+  const th = { padding: "9px 14px", textAlign: "left", fontSize: 11, fontWeight: 700,
+    color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase",
+    background: `${C.border}55`, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
+  const td = { padding: "11px 14px", borderBottom: `1px solid ${C.border}22`,
+    verticalAlign: "middle", color: C.text, fontSize: 13 };
+
+  return (
+    <div>
+      <Toast msg={toast} />
+
+      {/* Page title */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+        <div style={{ fontSize: 20, fontWeight: 700, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+          <Icon name="washpro" size={20} color={C.accentLight} /> Wash Pro Profiles
+          <span style={{ fontSize: 12, background: `${C.accent}22`, color: C.accentLight,
+            padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
+            {rows.length} total
+          </span>
+        </div>
+        <button style={btn("gold")} onClick={() => { setSelected(null); setModal("form"); }}>
+          <Icon name="plus" size={13} /> New Profile
+        </button>
+      </div>
+
+      {/* Onboarding pipeline summary */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: "1.5rem" }}>
+        {ONBOARDING_STATUSES.map(s => {
+          const col    = ONBOARDING_COLOR[s] || C.textMuted;
+          const active = statusFilter === s;
+          return (
+            <div key={s} onClick={() => setStat(active ? "all" : s)}
+              style={{ flex: 1, minWidth: 90, background: active ? `${col}33` : C.surfaceAlt,
+                border: `1px solid ${active ? col : C.border}`, borderTop: `3px solid ${col}`,
+                borderRadius: 8, padding: "8px 12px", cursor: "pointer", transition: "all 0.15s" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: col, textTransform: "uppercase",
+                letterSpacing: "0.07em", marginBottom: 3 }}>{s.replace(/_/g, " ")}</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: active ? col : C.text }}>
+                {counts[s] || 0}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Table */}
+      <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "1rem 1.5rem",
+          borderBottom: `1px solid ${C.border}`, flexWrap: "wrap" }}>
+          <div style={{ position: "relative" }}>
+            <span style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)" }}>
+              <Icon name="search" size={13} color={C.textMuted} />
+            </span>
+            <input style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6,
+              padding: "6px 11px 6px 30px", color: C.text, fontSize: 13, outline: "none", width: 200 }}
+              placeholder="Search wash pros…" value={search} onChange={e => setSearch(e.target.value)} />
+          </div>
+          <select style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6,
+            padding: "6px 10px", color: C.text, fontSize: 12, cursor: "pointer" }}
+            value={typeFilter} onChange={e => setType(e.target.value)}>
+            <option value="all">All Types</option>
+            <option value="employee">Employee</option>
+            <option value="independent_contractor">Independent Contractor</option>
+          </select>
+          <button style={btn("ghost", true)} onClick={load}>
+            <Icon name="refresh" size={13} />
+          </button>
+          <div style={{ marginLeft: "auto", fontSize: 12, color: C.textMuted }}>
+            {filtered.length} profile{filtered.length !== 1 ? "s" : ""}
+          </div>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted }}>Loading profiles…</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted, fontSize: 13 }}>
+            No wash pro profiles found.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {["Name","Type","Onboarding","W9","Agreement","Insurance","Bg Check","Active","Actions"].map(h => (
+                    <th key={h} style={th}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(r => (
+                  <tr key={r.wash_pro_id}
+                    style={{ background: hovered === r.wash_pro_id ? C.surfaceHover : "transparent",
+                      transition: "background 0.1s" }}
+                    onMouseEnter={() => setHovered(r.wash_pro_id)}
+                    onMouseLeave={() => setHovered(null)}>
+                    <td style={td}>
+                      <div style={{ fontWeight: 600 }}>{r.legal_name}</div>
+                      {r.business_name && (
+                        <div style={{ fontSize: 11, color: C.textMuted }}>{r.business_name}</div>
+                      )}
+                      <div style={{ fontSize: 11, color: C.accentLight }}>{r.email}</div>
+                    </td>
+                    <td style={td}>
+                      <span style={{
+                        display: "inline-block", padding: "2px 8px", borderRadius: 10,
+                        fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+                        background: r.worker_type === "employee" ? `${C.accent}22` : `${C.purple}22`,
+                        color: r.worker_type === "employee" ? C.accentLight : C.purple,
+                      }}>
+                        {r.worker_type === "employee" ? "Employee" : "Contractor"}
+                      </span>
+                    </td>
+                    <td style={td}>
+                      <span style={{
+                        display: "inline-block", padding: "2px 8px", borderRadius: 10,
+                        fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+                        background: `${ONBOARDING_COLOR[r.onboarding_status] || C.textMuted}22`,
+                        color: ONBOARDING_COLOR[r.onboarding_status] || C.textMuted,
+                      }}>
+                        {(r.onboarding_status || "—").replace(/_/g, " ")}
+                      </span>
+                    </td>
+                    <td style={td}>{r.worker_type === "independent_contractor" ? statusDot(r.w9_status) : <span style={{ color: C.textMuted, fontSize: 11 }}>N/A</span>}</td>
+                    <td style={td}>{statusDot(r.agreement_status)}</td>
+                    <td style={td}>{statusDot(r.insurance_status)}</td>
+                    <td style={td}>{statusDot(r.background_check_status)}</td>
+                    <td style={td}>
+                      <span style={{
+                        display: "inline-block", width: 10, height: 10, borderRadius: "50%",
+                        background: r.active ? C.success : C.danger,
+                        boxShadow: r.active ? `0 0 6px ${C.success}` : "none",
+                      }} />
+                    </td>
+                    <td style={td}>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button style={btn("ghost", true)} title="Edit"
+                          onClick={() => { setSelected(r); setModal("form"); }}>
+                          <Icon name="edit" size={12} />
+                        </button>
+                        <button
+                          style={btn(r.active ? "danger" : "success", true)}
+                          title={r.active ? "Deactivate" : "Activate"}
+                          onClick={() => toggleActive(r)}>
+                          {r.active ? "Deactivate" : "Activate"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {modal === "form" && (
+        <WashProProfileModal
+          profile={selected}
+          onClose={() => { setModal(null); setSelected(null); }}
+          onSave={handleSave}
+        />
+      )}
+    </div>
+  );
+}
+
 // ── App Shell ─────────────────────────────────────────────────────────────────
 const NAV = [
-  { id: "dashboard",    label: "Dashboard",        icon: "dashboard" },
-  { id: "appointments", label: "Appointments",     icon: "appointments" },
-  { id: "washpro",      label: "Wash Pro View",    icon: "washpro" },
-  { id: "customers",    label: "Customers",        icon: "customers" },
-  { id: "packages",     label: "Service Packages", icon: "packages" },
+  { id: "dashboard",    label: "Dashboard",         icon: "dashboard" },
+  { id: "appointments", label: "Appointments",      icon: "appointments" },
+  { id: "washpro",      label: "Wash Pro View",     icon: "washpro" },
+  { id: "customers",    label: "Customers",         icon: "customers" },
+  { id: "packages",     label: "Service Packages",  icon: "packages" },
+  { id: "washpros",     label: "Wash Pro Profiles", icon: "washpros" },
 ];
 
 const NAV_COLORS = {
@@ -1652,6 +2062,7 @@ const NAV_COLORS = {
   washpro:      C.success,
   customers:    C.gold,
   packages:     C.gold,
+  washpros:     C.purple,
 };
 
 export default function App() {
@@ -1707,6 +2118,7 @@ export default function App() {
           {tab === "washpro"      && <WashProTab />}
           {tab === "customers"    && <CustomersTab />}
           {tab === "packages"     && <ServicePackagesTab />}
+          {tab === "washpros"     && <WashProProfilesTab />}
         </main>
       </div>
     </div>
