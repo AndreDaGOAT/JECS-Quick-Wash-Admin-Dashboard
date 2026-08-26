@@ -1830,11 +1830,24 @@ function WashProProfilesTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      // Join profiles to get auth email as fallback
       const data = await sbFetch(
-        "wash_pro_profiles?select=*&order=created_at.desc&limit=200"
+        "wash_pro_profiles?select=*,profiles(id,full_name,email,role,phone_number)&order=created_at.desc&limit=200"
       ) || [];
-      setRows(data);
-    } catch (_) { setRows([]); }
+
+      // Enrich — prefer wash_pro_profiles fields, fall back to profiles
+      const enriched = data.map(r => ({
+        ...r,
+        display_name:  r.legal_name   || r.profiles?.full_name  || "—",
+        display_email: r.email        || r.profiles?.email       || "—",
+        display_phone: r.phone_number || r.profiles?.phone_number|| "—",
+      }));
+
+      setRows(enriched);
+    } catch (e) {
+      console.error("[JECS] wash_pro_profiles load failed:", e.message);
+      setRows([]);
+    }
     setLoading(false);
   }, []);
 
@@ -1976,11 +1989,14 @@ function WashProProfilesTab() {
                     onMouseEnter={() => setHovered(r.wash_pro_id)}
                     onMouseLeave={() => setHovered(null)}>
                     <td style={td}>
-                      <div style={{ fontWeight: 600 }}>{r.legal_name}</div>
+                      <div style={{ fontWeight: 600 }}>{r.display_name || r.legal_name || "—"}</div>
                       {r.business_name && (
                         <div style={{ fontSize: 11, color: C.textMuted }}>{r.business_name}</div>
                       )}
-                      <div style={{ fontSize: 11, color: C.accentLight }}>{r.email}</div>
+                      <div style={{ fontSize: 11, color: C.accentLight }}>{r.display_email || r.email || "—"}</div>
+                      {(r.display_phone || r.phone_number) && (
+                        <div style={{ fontSize: 11, color: C.textMuted }}>{r.display_phone || r.phone_number}</div>
+                      )}
                     </td>
                     <td style={td}>
                       <span style={{
