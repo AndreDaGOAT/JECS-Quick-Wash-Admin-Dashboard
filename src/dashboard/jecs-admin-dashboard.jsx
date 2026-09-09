@@ -974,57 +974,91 @@ function DashboardTab({ onNavigate }) {
 
 // ── Wash Pro Map — with Leaflet.markercluster ────────────────────────────────
 function WashProMap({ rows, selectedId, onSelect }) {
-  const mapRef     = useRef(null);
-  const leafRef    = useRef(null);
-  const clusterRef = useRef(null);
-  const markersRef = useRef({});
+  const mapRef      = useRef(null);
+  const leafRef     = useRef(null);
+  const clusterRef  = useRef(null);
+  const markersRef  = useRef({});
+  const readyRef    = useRef(false);
+  const pendingRef  = useRef(null); // rows to render once map is ready
 
-  // Inject Leaflet + MarkerCluster CSS/JS once
+  // Wait until window.L AND window.L.markerClusterGroup are both available
+  function waitForLeaflet(cb, attempts = 0) {
+    if (window.L && window.L.markerClusterGroup) { cb(); return; }
+    if (attempts > 40) { console.error("[JECS] Leaflet failed to load"); return; }
+    setTimeout(() => waitForLeaflet(cb, attempts + 1), 150);
+  }
+
+  // Inject CDN scripts/styles once, then init map
   useEffect(() => {
-    if (document.getElementById("leaflet-css-wp")) { tryInit(); return; }
+    if (!mapRef.current) return;
 
-    const lcss = document.createElement("link");
-    lcss.id   = "leaflet-css-wp";
-    lcss.rel  = "stylesheet";
-    lcss.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-    document.head.appendChild(lcss);
+    function injectIfMissing(tag, attrs) {
+      if (document.getElementById(attrs.id || attrs.href)) return;
+      const el = document.createElement(tag);
+      Object.assign(el, attrs);
+      document.head.appendChild(el);
+    }
 
-    const mccss = document.createElement("link");
-    mccss.rel  = "stylesheet";
-    mccss.href = "https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css";
-    document.head.appendChild(mccss);
+    injectIfMissing("link", {
+      id: "leaflet-css-wp", rel: "stylesheet",
+      href: "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
+    });
+    injectIfMissing("link", {
+      id: "mc-css-wp", rel: "stylesheet",
+      href: "https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css",
+    });
+    injectIfMissing("link", {
+      id: "mc-default-css-wp", rel: "stylesheet",
+      href: "https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css",
+    });
 
-    const mccss2 = document.createElement("link");
-    mccss2.rel  = "stylesheet";
-    mccss2.href = "https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css";
-    document.head.appendChild(mccss2);
+    function loadScript(src, id, onload) {
+      if (document.getElementById(id)) { onload(); return; }
+      const s  = document.createElement("script");
+      s.id     = id;
+      s.src    = src;
+      s.onload = onload;
+      document.head.appendChild(s);
+    }
 
-    // Load Leaflet first, then MarkerCluster
-    const ljs = document.createElement("script");
-    ljs.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-    ljs.onload = () => {
-      const mcjs = document.createElement("script");
-      mcjs.src = "https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js";
-      mcjs.onload = () => tryInit();
-      document.head.appendChild(mcjs);
+    // Load Leaflet → then MarkerCluster → then init
+    loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js", "leaflet-js-wp", () => {
+      loadScript(
+        "https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js",
+        "mc-js-wp",
+        () => waitForLeaflet(initMap)
+      );
+    });
+
+    return () => {
+      // Clean up map on unmount
+      if (leafRef.current) {
+        leafRef.current.remove();
+        leafRef.current = null;
+        readyRef.current = false;
+      }
     };
-    document.head.appendChild(ljs);
   }, []);
 
-  function tryInit() {
-    setTimeout(() => {
-      if (!mapRef.current || leafRef.current) return;
-      const L   = window.L;
-      if (!L) return;
-      const map = L.map(mapRef.current, { zoomControl: true })
-        .setView([35.1495, -90.0490], 11);
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      }).addTo(map);
-      leafRef.current = map;
-      updateMarkers(rows, selectedId);
-    }, 200);
+  function initMap() {
+    if (!mapRef.current || leafRef.current) return;
+    const L   = window.L;
+    const map = L.map(mapRef.current, { zoomControl: true })
+      .setView([35.1495, -90.0490], 11);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(map);
+
+    leafRef.current  = map;
+    readyRef.current = true;
+
+    // Render any rows that arrived before map was ready
+    if (pendingRef.current) {
+      updateMarkers(pendingRef.current.rows, pendingRef.current.selectedId);
+      pendingRef.current = null;
+    }
   }
 
   function makeIcon(status, isSelected) {
@@ -1045,18 +1079,24 @@ function WashProMap({ rows, selectedId, onSelect }) {
 
   function updateMarkers(currentRows, currentSelectedId) {
     const L = window.L;
-    if (!L || !leafRef.current) return;
+    if (!L || !leafRef.current) {
+      // Map not ready yet — store for when it is
+      pendingRef.current = { rows: currentRows, selectedId: currentSelectedId };
+      return;
+    }
+
     const map = leafRef.current;
 
-    // Remove old cluster group
-    if (clusterRef.current) map.removeLayer(clusterRef.current);
+    // Remove old cluster
+    if (clusterRef.current) { map.removeLayer(clusterRef.current); }
 
-    // Create new cluster group — style clusters by dominant status
     const cluster = L.markerClusterGroup({
       maxClusterRadius: 60,
+      spiderfyOnMaxZoom: true,
+      showCoverageOnHover: false,
+      zoomToBoundsOnClick: true,
       iconCreateFunction(c) {
         const count = c.getChildCount();
-        // Pick size bucket
         const size  = count < 10 ? 36 : count < 50 ? 44 : 52;
         return L.divIcon({
           html: `<div style="
@@ -1072,9 +1112,6 @@ function WashProMap({ rows, selectedId, onSelect }) {
           iconAnchor: [size / 2, size / 2],
         });
       },
-      spiderfyOnMaxZoom: true,
-      showCoverageOnHover: false,
-      zoomToBoundsOnClick: true,
     });
 
     markersRef.current = {};
@@ -1082,8 +1119,8 @@ function WashProMap({ rows, selectedId, onSelect }) {
     const bounds    = [];
 
     validRows.forEach(a => {
-      const lat  = parseFloat(a.customers.latitude);
-      const lng  = parseFloat(a.customers.longitude);
+      const lat   = parseFloat(a.customers.latitude);
+      const lng   = parseFloat(a.customers.longitude);
       const isSel = a.appointment_id === currentSelectedId;
       const time  = a.scheduled_start
         ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -1094,12 +1131,12 @@ function WashProMap({ rows, selectedId, onSelect }) {
         zIndexOffset: isSel ? 1000 : 0,
       })
         .bindPopup(`
-          <div style="font-family:Inter,sans-serif;min-width:200px;font-size:13px">
+          <div style="font-family:Inter,sans-serif;min-width:200px;font-size:13px;line-height:1.4">
             <div style="font-weight:700;color:#172033;margin-bottom:3px">${a.customer_name || "—"}</div>
             <div style="color:#65738A;font-size:11px;margin-bottom:5px">${time} · ${a.appointment_status}</div>
             <div style="font-size:12px;color:#172033;margin-bottom:3px">${a.customer_address || "—"}</div>
             ${a.vehicle_summary && a.vehicle_summary !== "—"
-              ? `<div style="font-size:11px;color:#D4A843">🚗 ${a.vehicle_summary}</div>` : ""}
+              ? `<div style="font-size:11px;color:#D4A843;margin-top:4px">🚗 ${a.vehicle_summary}</div>` : ""}
           </div>`, { maxWidth: 280 })
         .on("click", () => onSelect(a.appointment_id));
 
@@ -1108,12 +1145,13 @@ function WashProMap({ rows, selectedId, onSelect }) {
       bounds.push([lat, lng]);
     });
 
-    // Draw route through active jobs in time order
+    // Route polyline through active jobs
     map.eachLayer(l => { if (l._isRoute) map.removeLayer(l); });
     const routePts = validRows
       .filter(r => !["Completed","Cancelled","Rescheduled"].includes(r.appointment_status))
       .sort((a, b) => (a.scheduled_start || "").localeCompare(b.scheduled_start || ""))
       .map(r => [parseFloat(r.customers.latitude), parseFloat(r.customers.longitude)]);
+
     if (routePts.length > 1) {
       const line = L.polyline(routePts, {
         color: "#0284C7", weight: 2.5, opacity: 0.55, dashArray: "8 10",
@@ -1125,13 +1163,16 @@ function WashProMap({ rows, selectedId, onSelect }) {
     clusterRef.current = cluster;
 
     if (bounds.length > 0) {
-      try { map.fitBounds(L.latLngBounds(bounds).pad(0.15)); } catch (_) {}
+      try { map.fitBounds(window.L.latLngBounds(bounds).pad(0.15)); } catch (_) {}
     }
+
+    // Force map to recalculate its size in case container changed
+    setTimeout(() => map.invalidateSize(), 100);
   }
 
-  // Refresh markers when rows or selection changes
+  // Update markers when rows or selection changes
   useEffect(() => {
-    if (leafRef.current) updateMarkers(rows, selectedId);
+    updateMarkers(rows, selectedId);
   }, [rows, selectedId]);
 
   // Pan to selected marker
@@ -1140,17 +1181,22 @@ function WashProMap({ rows, selectedId, onSelect }) {
     const marker = markersRef.current[selectedId];
     if (marker) {
       leafRef.current.panTo(marker.getLatLng(), { animate: true, duration: 0.4 });
-      setTimeout(() => marker.openPopup(), 420);
+      setTimeout(() => marker.openPopup(), 450);
     }
   }, [selectedId]);
 
   return (
-    <div ref={mapRef} style={{
-      width: "100%", height: "100%", minHeight: 500,
-      background: C.surfaceAlt,
-    }} />
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <div ref={mapRef} style={{
+        width: "100%",
+        height: "100%",
+        minHeight: 500,
+        background: C.surfaceAlt,
+      }} />
+    </div>
   );
 }
+
 
 // ── Wash Pro Tab — scales to 140+ appointments ────────────────────────────────
 function WashProTab() {
