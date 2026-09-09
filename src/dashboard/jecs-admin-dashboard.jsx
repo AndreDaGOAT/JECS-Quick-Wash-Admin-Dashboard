@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const SB_URL = "https://mylqkbpclcrqorjctjxn.supabase.co";
@@ -972,66 +972,252 @@ function DashboardTab({ onNavigate }) {
   );
 }
 
-// ── Wash Pro View ─────────────────────────────────────────────────────────────
+// ── Wash Pro Map — with Leaflet.markercluster ────────────────────────────────
+function WashProMap({ rows, selectedId, onSelect }) {
+  const mapRef     = useRef(null);
+  const leafRef    = useRef(null);
+  const clusterRef = useRef(null);
+  const markersRef = useRef({});
+
+  // Inject Leaflet + MarkerCluster CSS/JS once
+  useEffect(() => {
+    if (document.getElementById("leaflet-css-wp")) { tryInit(); return; }
+
+    const lcss = document.createElement("link");
+    lcss.id   = "leaflet-css-wp";
+    lcss.rel  = "stylesheet";
+    lcss.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    document.head.appendChild(lcss);
+
+    const mccss = document.createElement("link");
+    mccss.rel  = "stylesheet";
+    mccss.href = "https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css";
+    document.head.appendChild(mccss);
+
+    const mccss2 = document.createElement("link");
+    mccss2.rel  = "stylesheet";
+    mccss2.href = "https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css";
+    document.head.appendChild(mccss2);
+
+    // Load Leaflet first, then MarkerCluster
+    const ljs = document.createElement("script");
+    ljs.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    ljs.onload = () => {
+      const mcjs = document.createElement("script");
+      mcjs.src = "https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js";
+      mcjs.onload = () => tryInit();
+      document.head.appendChild(mcjs);
+    };
+    document.head.appendChild(ljs);
+  }, []);
+
+  function tryInit() {
+    setTimeout(() => {
+      if (!mapRef.current || leafRef.current) return;
+      const L   = window.L;
+      if (!L) return;
+      const map = L.map(mapRef.current, { zoomControl: true })
+        .setView([35.1495, -90.0490], 11);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      }).addTo(map);
+      leafRef.current = map;
+      updateMarkers(rows, selectedId);
+    }, 200);
+  }
+
+  function makeIcon(status, isSelected) {
+    const L     = window.L;
+    const color = STATUS_COLORS[status] || "#7A90B0";
+    const size  = isSelected ? 22 : 14;
+    return L.divIcon({
+      className: "",
+      html: `<span style="display:block;width:${size}px;height:${size}px;border-radius:50%;
+        background:${color};border:${isSelected ? 3 : 2}px solid #fff;
+        box-shadow:${isSelected ? `0 0 0 4px ${color}44,` : ""}0 2px 6px rgba(0,0,0,0.35)">
+      </span>`,
+      iconSize:    [size, size],
+      iconAnchor:  [size / 2, size / 2],
+      popupAnchor: [0, -(size + 4)],
+    });
+  }
+
+  function updateMarkers(currentRows, currentSelectedId) {
+    const L = window.L;
+    if (!L || !leafRef.current) return;
+    const map = leafRef.current;
+
+    // Remove old cluster group
+    if (clusterRef.current) map.removeLayer(clusterRef.current);
+
+    // Create new cluster group — style clusters by dominant status
+    const cluster = L.markerClusterGroup({
+      maxClusterRadius: 60,
+      iconCreateFunction(c) {
+        const count = c.getChildCount();
+        // Pick size bucket
+        const size  = count < 10 ? 36 : count < 50 ? 44 : 52;
+        return L.divIcon({
+          html: `<div style="
+            width:${size}px;height:${size}px;border-radius:50%;
+            background:#0284C7;border:3px solid #fff;
+            color:#fff;font-weight:800;font-size:${count < 10 ? 13 : 11}px;
+            display:flex;align-items:center;justify-content:center;
+            box-shadow:0 3px 10px rgba(2,132,199,0.45);">
+            ${count}
+          </div>`,
+          className:  "",
+          iconSize:   [size, size],
+          iconAnchor: [size / 2, size / 2],
+        });
+      },
+      spiderfyOnMaxZoom: true,
+      showCoverageOnHover: false,
+      zoomToBoundsOnClick: true,
+    });
+
+    markersRef.current = {};
+    const validRows = currentRows.filter(r => r.customers?.latitude && r.customers?.longitude);
+    const bounds    = [];
+
+    validRows.forEach(a => {
+      const lat  = parseFloat(a.customers.latitude);
+      const lng  = parseFloat(a.customers.longitude);
+      const isSel = a.appointment_id === currentSelectedId;
+      const time  = a.scheduled_start
+        ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : "—";
+
+      const marker = L.marker([lat, lng], {
+        icon: makeIcon(a.appointment_status, isSel),
+        zIndexOffset: isSel ? 1000 : 0,
+      })
+        .bindPopup(`
+          <div style="font-family:Inter,sans-serif;min-width:200px;font-size:13px">
+            <div style="font-weight:700;color:#172033;margin-bottom:3px">${a.customer_name || "—"}</div>
+            <div style="color:#65738A;font-size:11px;margin-bottom:5px">${time} · ${a.appointment_status}</div>
+            <div style="font-size:12px;color:#172033;margin-bottom:3px">${a.customer_address || "—"}</div>
+            ${a.vehicle_summary && a.vehicle_summary !== "—"
+              ? `<div style="font-size:11px;color:#D4A843">🚗 ${a.vehicle_summary}</div>` : ""}
+          </div>`, { maxWidth: 280 })
+        .on("click", () => onSelect(a.appointment_id));
+
+      cluster.addLayer(marker);
+      markersRef.current[a.appointment_id] = marker;
+      bounds.push([lat, lng]);
+    });
+
+    // Draw route through active jobs in time order
+    map.eachLayer(l => { if (l._isRoute) map.removeLayer(l); });
+    const routePts = validRows
+      .filter(r => !["Completed","Cancelled","Rescheduled"].includes(r.appointment_status))
+      .sort((a, b) => (a.scheduled_start || "").localeCompare(b.scheduled_start || ""))
+      .map(r => [parseFloat(r.customers.latitude), parseFloat(r.customers.longitude)]);
+    if (routePts.length > 1) {
+      const line = L.polyline(routePts, {
+        color: "#0284C7", weight: 2.5, opacity: 0.55, dashArray: "8 10",
+      }).addTo(map);
+      line._isRoute = true;
+    }
+
+    map.addLayer(cluster);
+    clusterRef.current = cluster;
+
+    if (bounds.length > 0) {
+      try { map.fitBounds(L.latLngBounds(bounds).pad(0.15)); } catch (_) {}
+    }
+  }
+
+  // Refresh markers when rows or selection changes
+  useEffect(() => {
+    if (leafRef.current) updateMarkers(rows, selectedId);
+  }, [rows, selectedId]);
+
+  // Pan to selected marker
+  useEffect(() => {
+    if (!selectedId || !leafRef.current) return;
+    const marker = markersRef.current[selectedId];
+    if (marker) {
+      leafRef.current.panTo(marker.getLatLng(), { animate: true, duration: 0.4 });
+      setTimeout(() => marker.openPopup(), 420);
+    }
+  }, [selectedId]);
+
+  return (
+    <div ref={mapRef} style={{
+      width: "100%", height: "100%", minHeight: 500,
+      background: C.surfaceAlt,
+    }} />
+  );
+}
+
+// ── Wash Pro Tab — scales to 140+ appointments ────────────────────────────────
 function WashProTab() {
   const todayStr  = new Date().toISOString().slice(0, 10);
   const [selectedDate, setSelectedDate] = useState(todayStr);
-  const [rows, setRows]       = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [toast, setToast]     = useState("");
+  const [rows,       setRows]      = useState([]);
+  const [loading,    setLoading]   = useState(true);
+  const [toast,      setToast]     = useState("");
+  const [selectedId, setSelectedId] = useState(null);
+
+  // ── Filter state ──────────────────────────────────────────────────────────
+  const [fStatus, setFStatus] = useState("all");
+  const [fZip,    setFZip]    = useState("");
+  const [fWindow, setFWindow] = useState("all");
 
   const showToast = (m) => { setToast(m); setTimeout(() => setToast(""), 3000); };
 
+  // ── Load — single batch query, vehicle lookup cached by vehicle_id ────────
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      // Batch fetch — customers embedded in one request
       const appts = await sbFetch(
-        `appointments?select=*,customers(full_name,formatted_address,phone_number)&scheduled_start=gte.${selectedDate}T00:00:00&scheduled_start=lte.${selectedDate}T23:59:59&order=scheduled_start.asc&limit=100`
+        `appointments?select=*,customers(full_name,formatted_address,latitude,longitude,phone_number,zip_code)&scheduled_start=gte.${selectedDate}T00:00:00&scheduled_start=lte.${selectedDate}T23:59:59&order=scheduled_start.asc&limit=500`
       ) || [];
 
-      const enriched = await Promise.all(appts.map(async (a) => {
-        let vehicleSum = null, licensePlate = null, vehicleType = null;
+      // Batch-collect all unique vehicle_ids from service_requests
+      // Single query instead of N queries
+      const srIds = appts.map(a => a.service_request_id).filter(Boolean);
+      let srMap   = {};
+      if (srIds.length > 0) {
+        try {
+          const srs = await sbFetch(
+            `service_requests?request_id=in.(${srIds.join(",")})&select=request_id,vehicle_id`
+          ) || [];
+          srs.forEach(s => { srMap[s.request_id] = s.vehicle_id; });
+        } catch (_) {}
+      }
 
-        if (a.service_request_id) {
-          try {
-            const srs = await sbFetch(`service_requests?request_id=eq.${a.service_request_id}&select=vehicle_id&limit=1`);
-            const vid = srs?.[0]?.vehicle_id;
-            if (vid) {
-              const vehs = await sbFetch(`vehicles?vehicle_id=eq.${vid}&select=vehicle_type,color,license_plate&limit=1`);
-              if (vehs?.[0]) {
-                const v = vehs[0];
-                vehicleSum   = v.vehicle_type || null;
-                licensePlate = v.license_plate || null;
-                vehicleType  = v.vehicle_type  || null;
-              }
-            }
-          } catch (_) {}
-        }
+      // Batch-collect all unique vehicle records
+      const vIds  = [...new Set(Object.values(srMap).filter(Boolean))];
+      let vehMap  = {};
+      if (vIds.length > 0) {
+        try {
+          const vehs = await sbFetch(
+            `vehicles?vehicle_id=in.(${vIds.join(",")})&select=vehicle_id,vehicle_type,license_plate`
+          ) || [];
+          vehs.forEach(v => { vehMap[v.vehicle_id] = v; });
+        } catch (_) {}
+      }
 
-        if (!vehicleSum && !vehicleType && a.customer_id) {
-          try {
-            const vehs = await sbFetch(`vehicles?customer_id=eq.${a.customer_id}&select=vehicle_type,color,license_plate&order=created_at.desc&limit=1`);
-            if (vehs?.[0]) {
-              const v = vehs[0];
-              vehicleSum   = v.vehicle_type || null;
-              licensePlate = v.license_plate || null;
-              vehicleType  = v.vehicle_type  || null;
-            }
-          } catch (_) {}
-        }
-
+      const enriched = appts.map(a => {
+        const vid  = srMap[a.service_request_id];
+        const veh  = vid ? vehMap[vid] : null;
         return {
           ...a,
           customer_name:    a.customers?.full_name         || "—",
           customer_address: a.customers?.formatted_address || "—",
           customer_phone:   a.customers?.phone_number      || "—",
-          vehicle_summary:  vehicleSum || vehicleType      || "—",
-          vehicle_type:     vehicleType                    || "—",
-          license_plate:    licensePlate                   || "—",
+          customer_zip:     a.customers?.zip_code          || "",
+          vehicle_summary:  veh?.vehicle_type              || "—",
+          license_plate:    veh?.license_plate             || "—",
         };
-      }));
+      });
 
       setRows(enriched);
+      setSelectedId(enriched[0]?.appointment_id || null);
     } catch (e) { console.error(e); setRows([]); }
     setLoading(false);
   }, [selectedDate]);
@@ -1046,124 +1232,246 @@ function WashProTab() {
     } catch (e) { showToast("Error: " + e.message); }
   }
 
+  // ── Apply filters ─────────────────────────────────────────────────────────
+  const filtered = rows.filter(a => {
+    if (fStatus !== "all" && a.appointment_status !== fStatus) return false;
+    if (fZip && !(a.customer_zip || "").includes(fZip)) return false;
+    if (fWindow !== "all" && a.preferred_time_window !== fWindow) return false;
+    return true;
+  });
+
   const isToday   = selectedDate === todayStr;
   const dateLabel = isToday
     ? "Today"
     : new Date(selectedDate + "T12:00:00").toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
-  const today     = new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+
+  // Status counts across ALL rows (not filtered) for summary
+  const counts = {};
+  STATUS_PIPELINE.forEach(s => { counts[s] = rows.filter(r => r.appointment_status === s).length; });
+
+  const inp = {
+    background: C.surfaceAlt, border: `1px solid ${C.border}`,
+    borderRadius: 6, padding: "5px 9px", color: C.text,
+    fontSize: 12, outline: "none",
+  };
 
   return (
-    <div>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)", minHeight: 0 }}>
       <Toast msg={toast} />
 
-      <div style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: "0.25rem", display: "flex", alignItems: "center", gap: 8 }}>
-        <Icon name="washpro" size={20} color={C.accentLight} /> Wash Pro
-        <span style={{ fontSize: 13, color: isToday ? C.gold : C.accentLight, fontWeight: 600 }}>{dateLabel}</span>
+      {/* ── Header ─────────────────────────────────────────────────────── */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Icon name="washpro" size={20} color={C.accentLight} />
+          <span style={{ fontSize: 18, fontWeight: 700, color: C.text }}>Wash Pro View</span>
+          <span style={{ fontSize: 13, color: isToday ? C.gold : C.accentLight, fontWeight: 600 }}>{dateLabel}</span>
+          <span style={{ fontSize: 11, background: `${C.accent}22`, color: C.accentLight, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
+            {rows.length} appointments
+          </span>
+        </div>
+        <button style={btn("ghost", true)} onClick={load}>
+          <Icon name="refresh" size={12} /> Refresh
+        </button>
       </div>
-      <div style={{ fontSize: 12, color: C.textMuted, marginBottom: "1rem" }}>{today}</div>
 
-      {/* Date strip navigator — ±2 weeks */}
+      {/* ── Pipeline summary bar ────────────────────────────────────────── */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: "0.75rem" }}>
+        {STATUS_PIPELINE.filter(s => counts[s] > 0).map(s => {
+          const col    = statusColor(s);
+          const active = fStatus === s;
+          return (
+            <div key={s} onClick={() => setFStatus(active ? "all" : s)}
+              style={{
+                padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11,
+                fontWeight: 700, background: active ? `${col}33` : `${col}11`,
+                border: `1px solid ${active ? col : `${col}33`}`, color: col,
+                transition: "all 0.12s",
+              }}>
+              {counts[s]} {s}
+            </div>
+          );
+        })}
+        {fStatus !== "all" && (
+          <button style={{ ...btn("ghost", true), fontSize: 11 }} onClick={() => setFStatus("all")}>
+            ✕ Clear
+          </button>
+        )}
+      </div>
+
+      {/* ── Date strip ─────────────────────────────────────────────────── */}
       <DateStrip selectedDate={selectedDate} onSelect={setSelectedDate} rangedays={14} />
 
       {loading ? (
-        <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted }}>Loading jobs for {dateLabel}…</div>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: C.textMuted }}>
+          Loading {rows.length || ""} appointments for {dateLabel}…
+        </div>
       ) : rows.length === 0 ? (
-        <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted, fontSize: 13 }}>No appointments scheduled for {dateLabel}.</div>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: C.textMuted, fontSize: 13 }}>
+          No appointments scheduled for {dateLabel}.
+        </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-          {rows.map(a => {
-            const currentIdx = STATUS_PIPELINE.indexOf(a.appointment_status);
-            const canAdvance = currentIdx >= 0 && currentIdx < STATUS_PIPELINE.length - 1;
-            const nextStatus = canAdvance ? STATUS_PIPELINE[currentIdx + 1] : null;
-            const col        = statusColor(a.appointment_status);
-            const time       = a.scheduled_start
-              ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-              : "—";
+        <div style={{
+          flex: 1, minHeight: 0,
+          display: "grid",
+          gridTemplateColumns: "3fr 2fr",
+          border: `1px solid ${C.border}`,
+          borderRadius: 10,
+          overflow: "hidden",
+          background: C.surfaceAlt,
+        }}>
 
-            return (
-              <div key={a.appointment_id} style={{
-                background: C.surfaceAlt, border: `1px solid ${C.border}`,
-                borderLeft: `4px solid ${col}`, borderRadius: 10, padding: "1.25rem 1.5rem",
-              }}>
-                {/* Header row */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem", flexWrap: "wrap", gap: 8 }}>
-                  <div>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: C.text }}>{a.customer_name}</div>
-                    <div style={{ fontSize: 12, color: C.accentLight, marginTop: 2 }}>
-                      <Icon name="clock" size={12} color={C.accentLight} /> {time}
-                    </div>
-                  </div>
-                  <span style={pill(a.appointment_status)}>{a.appointment_status}</span>
+          {/* ── LEFT: Clustered map ─────────────────────────────────── */}
+          <div style={{ position: "relative", minHeight: 0 }}>
+            {rows.some(r => r.customers?.latitude) ? (
+              <WashProMap
+                rows={filtered}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+              />
+            ) : (
+              <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: C.textMuted, gap: 8, padding: "2rem" }}>
+                <Icon name="pin" size={28} color={C.border} />
+                <div style={{ fontSize: 13, textAlign: "center" }}>
+                  No geocoded addresses.<br />
+                  <span style={{ fontSize: 11 }}>Customer latitude/longitude needed for map pins.</span>
                 </div>
+              </div>
+            )}
+          </div>
 
-                {/* Details grid */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem 1.5rem", marginBottom: "1rem", fontSize: 13 }}>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 2 }}>Address</div>
-                    <div style={{ color: C.text }}>{a.customer_address}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 2 }}>Phone</div>
-                    <div style={{ color: C.text }}>{a.customer_phone}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 2 }}>Vehicle</div>
-                    <div style={{ color: C.text }}>
-                    {a.vehicle_summary !== "—" ? a.vehicle_summary : "—"}
-                  </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 2 }}>Plate</div>
-                    <div style={{ color: C.text }}>{a.license_plate}</div>
-                  </div>
-                  {a.customer_notes && (
-                    <div style={{ gridColumn: "1 / -1" }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 2 }}>Notes</div>
-                      <div style={{ color: C.warning, fontSize: 12 }}>{a.customer_notes}</div>
-                    </div>
-                  )}
-                </div>
+          {/* ── RIGHT: Filtered cards ───────────────────────────────── */}
+          <div style={{ borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", minHeight: 0 }}>
 
-                {/* Pipeline progress */}
-                <div style={{ display: "flex", gap: 4, marginBottom: "1rem", flexWrap: "wrap" }}>
-                  {STATUS_PIPELINE.map((s, i) => {
-                    const done    = STATUS_PIPELINE.indexOf(a.appointment_status) >= i;
-                    const current = a.appointment_status === s;
-                    return (
-                      <div key={s} style={{
-                        flex: 1, minWidth: 60, height: 4, borderRadius: 2,
-                        background: done ? statusColor(s) : C.border,
-                        opacity: current ? 1 : done ? 0.7 : 0.3,
-                        transition: "background 0.3s",
-                      }} title={s} />
-                    );
-                  })}
-                </div>
-
-                {/* Advance button */}
-                {canAdvance ? (
-                  <button
-                    style={{ ...btn("success"), width: "100%", justifyContent: "center", padding: "10px", fontSize: 14 }}
-                    onClick={() => handleAdvance(a)}>
-                    <Icon name="arrow" size={15} /> Mark as {nextStatus}
+            {/* Filter bar */}
+            <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 6, flexShrink: 0, background: C.surface }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                <select style={inp} value={fStatus} onChange={e => setFStatus(e.target.value)}>
+                  <option value="all">All Statuses</option>
+                  {STATUS_PIPELINE.map(s => <option key={s} value={s}>{s}</option>)}
+                  <option value="Cancelled">Cancelled</option>
+                  <option value="Rescheduled">Rescheduled</option>
+                </select>
+                <select style={inp} value={fWindow} onChange={e => setFWindow(e.target.value)}>
+                  <option value="all">All Windows</option>
+                  <option value="8AM-11AM">8AM – 11AM</option>
+                  <option value="11AM-2PM">11AM – 2PM</option>
+                  <option value="2PM-5PM">2PM – 5PM</option>
+                </select>
+                <input style={{ ...inp, width: 80 }} placeholder="ZIP" maxLength={5}
+                  value={fZip} onChange={e => setFZip(e.target.value)} />
+              </div>
+              <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 600 }}>
+                Showing <span style={{ color: C.accentLight }}>{filtered.length}</span> of {rows.length}
+                {(fStatus !== "all" || fZip || fWindow !== "all") && (
+                  <button style={{ marginLeft: 8, background: "none", border: "none", color: C.danger, fontSize: 11, cursor: "pointer", fontWeight: 600 }}
+                    onClick={() => { setFStatus("all"); setFZip(""); setFWindow("all"); }}>
+                    Clear filters
                   </button>
-                ) : a.appointment_status === "Completed" ? (
-                  <div style={{ textAlign: "center", padding: "8px", color: C.success, fontWeight: 700, fontSize: 13 }}>
-                    <Icon name="check" size={14} color={C.success} /> Completed
-                  </div>
-                ) : (
-                  <div style={{ textAlign: "center", padding: "8px", color: C.textMuted, fontSize: 12 }}>
-                    Status: {a.appointment_status}
-                  </div>
                 )}
               </div>
-            );
-          })}
+            </div>
+
+            {/* Scrollable cards */}
+            <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+              {filtered.length === 0 ? (
+                <div style={{ padding: "2rem", textAlign: "center", color: C.textMuted, fontSize: 12 }}>
+                  No appointments match these filters.
+                </div>
+              ) : (
+                filtered.map(a => {
+                  const currentIdx = STATUS_PIPELINE.indexOf(a.appointment_status);
+                  const canAdvance = currentIdx >= 0 && currentIdx < STATUS_PIPELINE.length - 1;
+                  const next       = canAdvance ? STATUS_PIPELINE[currentIdx + 1] : null;
+                  const col        = statusColor(a.appointment_status);
+                  const isSelected = a.appointment_id === selectedId;
+                  const time       = a.scheduled_start
+                    ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                    : "—";
+
+                  return (
+                    <div key={a.appointment_id}
+                      onClick={() => setSelectedId(a.appointment_id)}
+                      style={{
+                        padding: "12px 14px",
+                        borderLeft: `3px solid ${isSelected ? col : "transparent"}`,
+                        borderBottom: `1px solid ${C.border}`,
+                        background: isSelected ? `${col}12` : "transparent",
+                        cursor: "pointer",
+                        transition: "background 0.1s",
+                      }}>
+
+                      {/* Card header */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: 12, color: C.text }}>{a.customer_name}</div>
+                          <div style={{ fontSize: 10, color: C.accentLight }}>
+                            {time}{a.preferred_time_window ? ` · ${a.preferred_time_window}` : ""}
+                          </div>
+                        </div>
+                        <span style={{ ...pill(a.appointment_status), fontSize: 9, padding: "2px 7px" }}>
+                          {a.appointment_status}
+                        </span>
+                      </div>
+
+                      {/* Address */}
+                      {a.customer_address !== "—" && (
+                        <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 3 }}>
+                          📍 {a.customer_address}
+                        </div>
+                      )}
+
+                      {/* Vehicle + plate on one line */}
+                      {a.vehicle_summary !== "—" && (
+                        <div style={{ fontSize: 10, color: C.text, marginBottom: 3 }}>
+                          🚗 {a.vehicle_summary}
+                          {a.license_plate !== "—" && (
+                            <span style={{ color: C.gold, fontWeight: 700, marginLeft: 6 }}>🪪 {a.license_plate}</span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Notes */}
+                      {a.customer_notes && (
+                        <div style={{ fontSize: 10, color: C.warning, marginBottom: 4 }}>⚠ {a.customer_notes}</div>
+                      )}
+
+                      {/* Pipeline bar */}
+                      <div style={{ display: "flex", gap: 2, marginBottom: canAdvance ? 6 : 0 }}>
+                        {STATUS_PIPELINE.map((s, i) => (
+                          <div key={s} style={{
+                            flex: 1, height: 3, borderRadius: 2,
+                            background: STATUS_PIPELINE.indexOf(a.appointment_status) >= i
+                              ? statusColor(s) : C.border,
+                            opacity: a.appointment_status === s ? 1
+                              : STATUS_PIPELINE.indexOf(a.appointment_status) > i ? 0.7 : 0.2,
+                          }} title={s} />
+                        ))}
+                      </div>
+
+                      {/* Advance button */}
+                      {canAdvance && (
+                        <button
+                          style={{ ...btn("success", true), width: "100%", justifyContent: "center", fontSize: 10, padding: "4px 8px" }}
+                          onClick={e => { e.stopPropagation(); handleAdvance(a); }}>
+                          <Icon name="arrow" size={10} /> {next}
+                        </button>
+                      )}
+
+                      {a.appointment_status === "Completed" && (
+                        <div style={{ fontSize: 10, color: C.success, fontWeight: 700 }}>✓ Completed</div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
   );
 }
+
 
 // ── Customers Tab (unchanged, from v1) ────────────────────────────────────────
 function CustomersTab() {
