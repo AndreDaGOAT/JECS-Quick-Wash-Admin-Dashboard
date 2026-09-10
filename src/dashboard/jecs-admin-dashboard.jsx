@@ -203,29 +203,57 @@ function Login({ onLogin }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: C.base, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,sans-serif", padding: "1rem" }}>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderTop: `3px solid ${C.gold}`, borderRadius: 12, padding: "2.5rem", width: "100%", maxWidth: 420, boxShadow: "0 24px 60px #00000055" }}>
+    <div style={{
+      minHeight: "100vh",
+      background: C.base,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontFamily: "'Inter','Segoe UI',system-ui,sans-serif",
+      padding: "1rem",
+    }}>
+      <div style={{
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        borderTop: `3px solid ${C.gold}`,
+        borderRadius: 12,
+        padding: "2.5rem",
+        width: "100%",
+        maxWidth: 400,
+        boxShadow: "0 24px 60px #00000055",
+      }}>
         <div style={{ textAlign: "center", marginBottom: "2rem" }}>
-          <div style={{ fontSize: 32, fontWeight: 800, color: C.gold, letterSpacing: "0.02em" }}>JECS</div>
-          <div style={{ fontSize: 13, color: C.textMuted, marginTop: 4 }}>Quick Wash · Admin Portal</div>
+          <div style={{ fontSize: 36, fontWeight: 800, color: C.gold, letterSpacing: "0.02em" }}>JECS</div>
+          <div style={{ fontSize: 13, color: C.textMuted, marginTop: 4, fontWeight: 500 }}>Quick Wash · Admin Portal</div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", display: "block", marginBottom: 5 }}>Admin Email</label>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", display: "block", marginBottom: 6 }}>
+              Admin Email
+            </label>
             <input
-              style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px 12px", color: C.text, fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box" }}
-              type="email" placeholder="your@email.com" value={email}
+              style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", color: C.text, fontSize: 14, outline: "none", width: "100%", boxSizing: "border-box", transition: "border-color 0.15s" }}
+              type="email"
+              placeholder="your@email.com"
+              value={email}
+              autoComplete="email"
               onChange={e => { setEmail(e.target.value); setErr(""); }}
               onKeyDown={e => e.key === "Enter" && handle()}
             />
           </div>
-          {err && <div style={{ fontSize: 12, color: C.danger }}>{err}</div>}
-          <button style={{ ...btn("gold"), padding: "10px", width: "100%", justifyContent: "center", fontSize: 14 }} onClick={handle}>
+          {err && (
+            <div style={{ fontSize: 12, color: C.danger, background: `${C.danger}11`, border: `1px solid ${C.danger}33`, borderRadius: 6, padding: "8px 12px" }}>
+              {err}
+            </div>
+          )}
+          <button
+            style={{ ...btn("gold"), padding: "11px", width: "100%", justifyContent: "center", fontSize: 14, fontWeight: 700, borderRadius: 8 }}
+            onClick={handle}>
             Sign In
           </button>
         </div>
-        <div style={{ marginTop: "1.5rem", fontSize: 11, color: C.textMuted, textAlign: "center", lineHeight: 1.6 }}>
-          Authorised personnel only · Jubilee Executive Car Service
+        <div style={{ marginTop: "1.75rem", fontSize: 11, color: C.textMuted, textAlign: "center", lineHeight: 1.7, borderTop: `1px solid ${C.border}`, paddingTop: "1rem" }}>
+          Authorised personnel only<br />Jubilee Executive Car Service
         </div>
       </div>
     </div>
@@ -813,7 +841,7 @@ function AppointmentModal({ appt, onClose, onSave }) {
 }
 
 // ── Date Range Navigator (shared by Dashboard + Wash Pro) ─────────────────────
-function DateStrip({ selectedDate, onSelect, rangedays = 14 }) {
+function DateStrip({ selectedDate, onSelect, rangedays = 7 }) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const days = [];
   for (let i = -rangedays; i <= rangedays; i++) {
@@ -822,24 +850,41 @@ function DateStrip({ selectedDate, onSelect, rangedays = 14 }) {
     days.push(d.toISOString().slice(0, 10));
   }
 
-  const stripRef = { current: null };
+  const scrollRef = useRef(null);
 
   useEffect(() => {
-    // Scroll selected day into view on mount
+    // Scroll selected day into centre of the strip
     const el = document.getElementById(`day-${selectedDate}`);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    if (el && scrollRef.current) {
+      const strip  = scrollRef.current;
+      const elLeft = el.offsetLeft;
+      const elW    = el.offsetWidth;
+      const stripW = strip.offsetWidth;
+      strip.scrollTo({ left: elLeft - stripW / 2 + elW / 2, behavior: "smooth" });
+    }
   }, [selectedDate]);
 
   return (
-    <div style={{ marginBottom: "1.5rem" }}>
-      {/* Week label row */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+    <div style={{ marginBottom: "1rem" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {/* Previous */}
         <button style={btn("ghost", true)} onClick={() => {
           const idx = days.indexOf(selectedDate);
           if (idx > 0) onSelect(days[idx - 1]);
         }}>◀</button>
-        <div style={{ flex: 1, overflowX: "auto", display: "flex", gap: 6, scrollbarWidth: "none" }}
-          ref={r => { stripRef.current = r; }}>
+
+        {/* Scrollable day tiles — constrained, no overflow */}
+        <div
+          ref={scrollRef}
+          style={{
+            flex: 1,
+            overflowX: "auto",
+            display: "flex",
+            gap: 4,
+            scrollbarWidth: "none",
+            msOverflowStyle: "none",
+            WebkitOverflowScrolling: "touch",
+          }}>
           {days.map(d => {
             const date    = new Date(d + "T12:00:00");
             const isToday = d === todayStr;
@@ -849,30 +894,39 @@ function DateStrip({ selectedDate, onSelect, rangedays = 14 }) {
               <div key={d} id={`day-${d}`}
                 onClick={() => onSelect(d)}
                 style={{
-                  flexShrink: 0, width: 54, textAlign: "center",
-                  padding: "8px 4px", borderRadius: 8, cursor: "pointer",
+                  flexShrink: 0,
+                  width: 48,
+                  textAlign: "center",
+                  padding: "6px 2px",
+                  borderRadius: 8,
+                  cursor: "pointer",
                   background: isSel ? C.accent : isToday ? `${C.gold}22` : "transparent",
-                  border: isToday && !isSel ? `1px solid ${C.gold}55` : `1px solid ${isSel ? C.accent : "transparent"}`,
+                  border: `1px solid ${isSel ? C.accent : isToday ? `${C.gold}55` : "transparent"}`,
                   transition: "all 0.12s",
                 }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: isSel ? "#fff" : isToday ? C.gold : C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                <div style={{ fontSize: 9, fontWeight: 700, color: isSel ? "#fff" : isToday ? C.gold : C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
                   {date.toLocaleDateString([], { weekday: "short" })}
                 </div>
-                <div style={{ fontSize: 18, fontWeight: 800, color: isSel ? "#fff" : isPast ? C.textMuted : C.text, lineHeight: 1.2 }}>
+                <div style={{ fontSize: 16, fontWeight: 800, color: isSel ? "#fff" : isPast ? C.textMuted : C.text, lineHeight: 1.3 }}>
                   {date.getDate()}
                 </div>
-                <div style={{ fontSize: 10, color: isSel ? "#ffffffaa" : C.textMuted }}>
+                <div style={{ fontSize: 9, color: isSel ? "#ffffffaa" : C.textMuted }}>
                   {date.toLocaleDateString([], { month: "short" })}
                 </div>
               </div>
             );
           })}
         </div>
+
+        {/* Next */}
         <button style={btn("ghost", true)} onClick={() => {
           const idx = days.indexOf(selectedDate);
           if (idx < days.length - 1) onSelect(days[idx + 1]);
         }}>▶</button>
-        <button style={btn(selectedDate === todayStr ? "primary" : "ghost", true)}
+
+        {/* Today shortcut */}
+        <button
+          style={btn(selectedDate === todayStr ? "primary" : "ghost", true)}
           onClick={() => onSelect(todayStr)}>
           Today
         </button>
@@ -948,7 +1002,7 @@ function DashboardTab({ onNavigate }) {
       </div>
 
       {/* Date strip navigator — ±2 weeks */}
-      <DateStrip selectedDate={selectedDate} onSelect={setSelectedDate} rangedays={14} />
+      <DateStrip selectedDate={selectedDate} onSelect={setSelectedDate} rangedays={7} />
 
       {/* Metric cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))", gap: "1rem", marginBottom: "2rem" }}>
@@ -1345,7 +1399,7 @@ function WashProTab() {
       </div>
 
       {/* ── Date strip ─────────────────────────────────────────────────── */}
-      <DateStrip selectedDate={selectedDate} onSelect={setSelectedDate} rangedays={14} />
+      <DateStrip selectedDate={selectedDate} onSelect={setSelectedDate} rangedays={7} />
 
       {loading ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: C.textMuted }}>
