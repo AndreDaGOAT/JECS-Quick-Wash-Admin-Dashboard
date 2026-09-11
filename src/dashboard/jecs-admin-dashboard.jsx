@@ -1169,12 +1169,12 @@ function WashProMap({ rows, selectedId, onSelect }) {
     });
 
     markersRef.current = {};
-    const validRows = currentRows.filter(r => r.customers?.latitude && r.customers?.longitude);
+    const validRows = currentRows.filter(r => r.customer_lat && r.customer_lng);
     const bounds    = [];
 
     validRows.forEach(a => {
-      const lat   = parseFloat(a.customers.latitude);
-      const lng   = parseFloat(a.customers.longitude);
+      const lat   = a.customer_lat;
+      const lng   = a.customer_lng;
       const isSel = a.appointment_id === currentSelectedId;
       const time  = a.scheduled_start
         ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -1204,7 +1204,7 @@ function WashProMap({ rows, selectedId, onSelect }) {
     const routePts = validRows
       .filter(r => !["Completed","Cancelled","Rescheduled"].includes(r.appointment_status))
       .sort((a, b) => (a.scheduled_start || "").localeCompare(b.scheduled_start || ""))
-      .map(r => [parseFloat(r.customers.latitude), parseFloat(r.customers.longitude)]);
+      .map(r => [r.customer_lat, r.customer_lng]);
 
     if (routePts.length > 1) {
       const line = L.polyline(routePts, {
@@ -1305,12 +1305,16 @@ function WashProTab() {
       const enriched = appts.map(a => {
         const vid  = srMap[a.service_request_id];
         const veh  = vid ? vehMap[vid] : null;
+        const lat  = parseFloat(a.customers?.latitude);
+        const lng  = parseFloat(a.customers?.longitude);
         return {
           ...a,
           customer_name:    a.customers?.full_name         || "—",
           customer_address: a.customers?.formatted_address || "—",
           customer_phone:   a.customers?.phone_number      || "—",
           customer_zip:     a.customers?.zip_code          || "",
+          customer_lat:     isFinite(lat) ? lat : null,
+          customer_lng:     isFinite(lng) ? lng : null,
           vehicle_summary:  veh?.vehicle_type              || "—",
           license_plate:    veh?.license_plate             || "—",
         };
@@ -1422,7 +1426,7 @@ function WashProTab() {
 
           {/* ── LEFT: Clustered map ─────────────────────────────────── */}
           <div style={{ position: "relative", minHeight: 0 }}>
-            {rows.some(r => r.customers?.latitude) ? (
+            {rows.some(r => r.customer_lat && r.customer_lng) ? (
               <WashProMap
                 rows={filtered}
                 selectedId={selectedId}
