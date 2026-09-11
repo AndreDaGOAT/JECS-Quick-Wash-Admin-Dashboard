@@ -1026,228 +1026,196 @@ function DashboardTab({ onNavigate }) {
   );
 }
 
-// ── Wash Pro Map — with Leaflet.markercluster ────────────────────────────────
+// ── Wash Pro Map — stable Leaflet instance ───────────────────────────────────
 function WashProMap({ rows, selectedId, onSelect }) {
-  const mapRef      = useRef(null);
-  const leafRef     = useRef(null);
-  const clusterRef  = useRef(null);
-  const markersRef  = useRef({});
-  const readyRef    = useRef(false);
-  const pendingRef  = useRef(null); // rows to render once map is ready
+  const mapRef     = useRef(null);  // DOM node
+  const leafRef    = useRef(null);  // L.map instance
+  const clusterRef = useRef(null);  // L.markerClusterGroup instance
+  const markersRef = useRef({});    // { appointment_id: L.marker }
+  const onSelectRef = useRef(onSelect); // stable ref to avoid stale closure
 
-  // Wait until window.L AND window.L.markerClusterGroup are both available
-  function waitForLeaflet(cb, attempts = 0) {
-    if (window.L && window.L.markerClusterGroup) { cb(); return; }
-    if (attempts > 40) { console.error("[JECS] Leaflet failed to load"); return; }
-    setTimeout(() => waitForLeaflet(cb, attempts + 1), 150);
-  }
+  // Keep onSelect ref current
+  useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
 
-  // Inject CDN scripts/styles once, then init map
+  // ── Initialise Leaflet once on mount ─────────────────────────────────────
   useEffect(() => {
-    if (!mapRef.current) return;
-
-    function injectIfMissing(tag, attrs) {
-      if (document.getElementById(attrs.id || attrs.href)) return;
-      const el = document.createElement(tag);
-      Object.assign(el, attrs);
-      document.head.appendChild(el);
+    function initMap() {
+      if (!mapRef.current || leafRef.current) return;
+      const L   = window.L;
+      const map = L.map(mapRef.current, { zoomControl: true })
+        .setView([35.1495, -90.0490], 11);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      }).addTo(map);
+      leafRef.current = map;
     }
 
-    injectIfMissing("link", {
-      id: "leaflet-css-wp", rel: "stylesheet",
-      href: "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
-    });
-    injectIfMissing("link", {
-      id: "mc-css-wp", rel: "stylesheet",
-      href: "https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css",
-    });
-    injectIfMissing("link", {
-      id: "mc-default-css-wp", rel: "stylesheet",
-      href: "https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css",
-    });
+    function waitForLeaflet(attempts = 0) {
+      if (window.L && window.L.markerClusterGroup) { initMap(); return; }
+      if (attempts > 50) { console.error("[JECS] Leaflet failed to load after 7.5s"); return; }
+      setTimeout(() => waitForLeaflet(attempts + 1), 150);
+    }
 
-    function loadScript(src, id, onload) {
-      if (document.getElementById(id)) { onload(); return; }
+    function loadScript(src, id, cb) {
+      if (document.getElementById(id)) { cb(); return; }
       const s  = document.createElement("script");
       s.id     = id;
       s.src    = src;
-      s.onload = onload;
+      s.onload = cb;
+      s.onerror = () => console.error("[JECS] Failed to load:", src);
       document.head.appendChild(s);
     }
 
-    // Load Leaflet → then MarkerCluster → then init
-    loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js", "leaflet-js-wp", () => {
-      loadScript(
-        "https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js",
-        "mc-js-wp",
-        () => waitForLeaflet(initMap)
+    function injectCSS(href, id) {
+      if (document.getElementById(id)) return;
+      const l = document.createElement("link");
+      l.id = id; l.rel = "stylesheet"; l.href = href;
+      document.head.appendChild(l);
+    }
+
+    injectCSS("https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",                              "lf-css");
+    injectCSS("https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css",          "mc-css");
+    injectCSS("https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css",  "mc-def-css");
+
+    loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js", "lf-js", () => {
+      loadScript("https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js", "mc-js",
+        () => waitForLeaflet()
       );
     });
 
+    // Destroy map only on true unmount (component removed from tree)
     return () => {
-      // Clean up map on unmount
       if (leafRef.current) {
         leafRef.current.remove();
-        leafRef.current = null;
-        readyRef.current = false;
+        leafRef.current  = null;
+        clusterRef.current = null;
+        markersRef.current = {};
       }
     };
-  }, []);
+  }, []); // empty deps — run once only
 
-  function initMap() {
-    if (!mapRef.current || leafRef.current) return;
-    const L   = window.L;
-    const map = L.map(mapRef.current, { zoomControl: true })
-      .setView([35.1495, -90.0490], 11);
-
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    }).addTo(map);
-
-    leafRef.current  = map;
-    readyRef.current = true;
-
-    // Render any rows that arrived before map was ready
-    if (pendingRef.current) {
-      updateMarkers(pendingRef.current.rows, pendingRef.current.selectedId);
-      pendingRef.current = null;
-    }
-  }
-
-  function makeIcon(status, isSelected) {
-    const L     = window.L;
-    const color = STATUS_COLORS[status] || "#7A90B0";
-    const size  = isSelected ? 22 : 14;
-    return L.divIcon({
-      className: "",
-      html: `<span style="display:block;width:${size}px;height:${size}px;border-radius:50%;
-        background:${color};border:${isSelected ? 3 : 2}px solid #fff;
-        box-shadow:${isSelected ? `0 0 0 4px ${color}44,` : ""}0 2px 6px rgba(0,0,0,0.35)">
-      </span>`,
-      iconSize:    [size, size],
-      iconAnchor:  [size / 2, size / 2],
-      popupAnchor: [0, -(size + 4)],
-    });
-  }
-
-  function updateMarkers(currentRows, currentSelectedId) {
-    const L = window.L;
-    if (!L || !leafRef.current) {
-      // Map not ready yet — store for when it is
-      pendingRef.current = { rows: currentRows, selectedId: currentSelectedId };
-      return;
-    }
-
-    const map = leafRef.current;
-
-    // Remove old cluster
-    if (clusterRef.current) { map.removeLayer(clusterRef.current); }
-
-    const cluster = L.markerClusterGroup({
-      maxClusterRadius: 60,
-      spiderfyOnMaxZoom: true,
-      showCoverageOnHover: false,
-      zoomToBoundsOnClick: true,
-      iconCreateFunction(c) {
-        const count = c.getChildCount();
-        const size  = count < 10 ? 36 : count < 50 ? 44 : 52;
-        return L.divIcon({
-          html: `<div style="
-            width:${size}px;height:${size}px;border-radius:50%;
-            background:#0284C7;border:3px solid #fff;
-            color:#fff;font-weight:800;font-size:${count < 10 ? 13 : 11}px;
-            display:flex;align-items:center;justify-content:center;
-            box-shadow:0 3px 10px rgba(2,132,199,0.45);">
-            ${count}
-          </div>`,
-          className:  "",
-          iconSize:   [size, size],
-          iconAnchor: [size / 2, size / 2],
-        });
-      },
-    });
-
-    markersRef.current = {};
-    const validRows = currentRows.filter(r => r.customer_lat && r.customer_lng);
-    const bounds    = [];
-
-    validRows.forEach(a => {
-      const lat   = a.customer_lat;
-      const lng   = a.customer_lng;
-      const isSel = a.appointment_id === currentSelectedId;
-      const time  = a.scheduled_start
-        ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-        : "—";
-
-      const marker = L.marker([lat, lng], {
-        icon: makeIcon(a.appointment_status, isSel),
-        zIndexOffset: isSel ? 1000 : 0,
-      })
-        .bindPopup(`
-          <div style="font-family:Inter,sans-serif;min-width:200px;font-size:13px;line-height:1.4">
-            <div style="font-weight:700;color:#172033;margin-bottom:3px">${a.customer_name || "—"}</div>
-            <div style="color:#65738A;font-size:11px;margin-bottom:5px">${time} · ${a.appointment_status}</div>
-            <div style="font-size:12px;color:#172033;margin-bottom:3px">${a.customer_address || "—"}</div>
-            ${a.vehicle_summary && a.vehicle_summary !== "—"
-              ? `<div style="font-size:11px;color:#D4A843;margin-top:4px">🚗 ${a.vehicle_summary}</div>` : ""}
-          </div>`, { maxWidth: 280 })
-        .on("click", () => onSelect(a.appointment_id));
-
-      cluster.addLayer(marker);
-      markersRef.current[a.appointment_id] = marker;
-      bounds.push([lat, lng]);
-    });
-
-    // Route polyline through active jobs
-    map.eachLayer(l => { if (l._isRoute) map.removeLayer(l); });
-    const routePts = validRows
-      .filter(r => !["Completed","Cancelled","Rescheduled"].includes(r.appointment_status))
-      .sort((a, b) => (a.scheduled_start || "").localeCompare(b.scheduled_start || ""))
-      .map(r => [r.customer_lat, r.customer_lng]);
-
-    if (routePts.length > 1) {
-      const line = L.polyline(routePts, {
-        color: "#0284C7", weight: 2.5, opacity: 0.55, dashArray: "8 10",
-      }).addTo(map);
-      line._isRoute = true;
-    }
-
-    map.addLayer(cluster);
-    clusterRef.current = cluster;
-
-    if (bounds.length > 0) {
-      try { map.fitBounds(window.L.latLngBounds(bounds).pad(0.15)); } catch (_) {}
-    }
-
-    // Force map to recalculate its size in case container changed
-    setTimeout(() => map.invalidateSize(), 100);
-  }
-
-  // Update markers when rows or selection changes
+  // ── Update markers whenever rows or selectedId changes ───────────────────
   useEffect(() => {
-    updateMarkers(rows, selectedId);
-  }, [rows, selectedId]);
+    // Poll until map is ready — handles the case where rows arrive
+    // before Leaflet finishes loading
+    function tryUpdate(attempts = 0) {
+      const L   = window.L;
+      const map = leafRef.current;
+      if (!L || !map) {
+        if (attempts < 40) setTimeout(() => tryUpdate(attempts + 1), 150);
+        return;
+      }
 
-  // Pan to selected marker
+      // Remove old cluster layer
+      if (clusterRef.current) {
+        map.removeLayer(clusterRef.current);
+        clusterRef.current = null;
+      }
+
+      const cluster = L.markerClusterGroup({
+        maxClusterRadius:    55,
+        spiderfyOnMaxZoom:   true,
+        showCoverageOnHover: false,
+        zoomToBoundsOnClick: true,
+        iconCreateFunction(c) {
+          const n    = c.getChildCount();
+          const size = n < 10 ? 34 : n < 50 ? 42 : 50;
+          return L.divIcon({
+            className: "",
+            html: `<div style="width:${size}px;height:${size}px;border-radius:50%;
+              background:#0284C7;border:3px solid #fff;color:#fff;
+              font-weight:800;font-size:${n < 10 ? 13 : 11}px;
+              display:flex;align-items:center;justify-content:center;
+              box-shadow:0 3px 10px rgba(2,132,199,0.45);">${n}</div>`,
+            iconSize:   [size, size],
+            iconAnchor: [size / 2, size / 2],
+          });
+        },
+      });
+
+      markersRef.current = {};
+      const valid  = rows.filter(r => r.customer_lat && r.customer_lng);
+      const bounds = [];
+
+      valid.forEach(a => {
+        const isSel = a.appointment_id === selectedId;
+        const color = STATUS_COLORS[a.appointment_status] || "#7A90B0";
+        const size  = isSel ? 22 : 14;
+        const time  = a.scheduled_start
+          ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+          : "—";
+
+        const icon = L.divIcon({
+          className: "",
+          html: `<span style="display:block;width:${size}px;height:${size}px;border-radius:50%;
+            background:${color};border:${isSel ? 3 : 2}px solid #fff;
+            box-shadow:${isSel ? `0 0 0 4px ${color}44,` : ""}0 2px 6px rgba(0,0,0,0.3)"></span>`,
+          iconSize:    [size, size],
+          iconAnchor:  [size / 2, size / 2],
+          popupAnchor: [0, -(size + 4)],
+        });
+
+        const marker = L.marker([a.customer_lat, a.customer_lng], {
+          icon, zIndexOffset: isSel ? 1000 : 0,
+        })
+          .bindPopup(`
+            <div style="font-family:Inter,sans-serif;min-width:200px;font-size:13px;line-height:1.5">
+              <div style="font-weight:700;color:#172033;margin-bottom:2px">${a.customer_name || "—"}</div>
+              <div style="color:#65738A;font-size:11px;margin-bottom:5px">${time} · ${a.appointment_status}</div>
+              <div style="font-size:12px;color:#172033;margin-bottom:3px">${a.customer_address || "—"}</div>
+              ${a.vehicle_summary && a.vehicle_summary !== "—"
+                ? `<div style="font-size:11px;color:#D4A843;margin-top:3px">🚗 ${a.vehicle_summary}</div>` : ""}
+            </div>`, { maxWidth: 280 })
+          .on("click", () => onSelectRef.current(a.appointment_id));
+
+        cluster.addLayer(marker);
+        markersRef.current[a.appointment_id] = marker;
+        bounds.push([a.customer_lat, a.customer_lng]);
+      });
+
+      // Route polyline through active jobs
+      map.eachLayer(l => { if (l._isRoute) map.removeLayer(l); });
+      const routePts = valid
+        .filter(r => !["Completed","Cancelled","Rescheduled"].includes(r.appointment_status))
+        .sort((a, b) => (a.scheduled_start || "").localeCompare(b.scheduled_start || ""))
+        .map(r => [r.customer_lat, r.customer_lng]);
+
+      if (routePts.length > 1) {
+        const line = L.polyline(routePts, {
+          color: "#0284C7", weight: 2.5, opacity: 0.55, dashArray: "8 10",
+        }).addTo(map);
+        line._isRoute = true;
+      }
+
+      map.addLayer(cluster);
+      clusterRef.current = cluster;
+
+      if (bounds.length > 0) {
+        try { map.fitBounds(L.latLngBounds(bounds).pad(0.15)); } catch (_) {}
+      }
+
+      setTimeout(() => map.invalidateSize(), 120);
+    }
+
+    tryUpdate();
+  }, [rows, selectedId]); // re-run whenever data changes
+
+  // ── Pan to selected marker ────────────────────────────────────────────────
   useEffect(() => {
     if (!selectedId || !leafRef.current) return;
     const marker = markersRef.current[selectedId];
     if (marker) {
-      leafRef.current.panTo(marker.getLatLng(), { animate: true, duration: 0.4 });
-      setTimeout(() => marker.openPopup(), 450);
+      leafRef.current.panTo(marker.getLatLng(), { animate: true, duration: 0.35 });
+      setTimeout(() => marker.openPopup(), 400);
     }
   }, [selectedId]);
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      <div ref={mapRef} style={{
-        width: "100%",
-        height: "100%",
-        minHeight: 500,
-        background: C.surfaceAlt,
-      }} />
-    </div>
+    <div ref={mapRef} style={{
+      width: "100%", height: "100%", minHeight: 500,
+      background: C.surfaceAlt,
+    }} />
   );
 }
 
@@ -1424,16 +1392,21 @@ function WashProTab() {
           background: C.surfaceAlt,
         }}>
 
-          {/* ── LEFT: Clustered map ─────────────────────────────────── */}
+          {/* ── LEFT: Clustered map — always mounted ────────────────────── */}
           <div style={{ position: "relative", minHeight: 0 }}>
-            {rows.some(r => r.customer_lat && r.customer_lng) ? (
-              <WashProMap
-                rows={filtered}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-              />
-            ) : (
-              <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: C.textMuted, gap: 8, padding: "2rem" }}>
+            <WashProMap
+              rows={filtered}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+            />
+            {!rows.some(r => r.customer_lat && r.customer_lng) && (
+              <div style={{
+                position: "absolute", inset: 0,
+                display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center",
+                background: `${C.surfaceAlt}ee`, pointerEvents: "none",
+                color: C.textMuted, gap: 8, padding: "2rem",
+              }}>
                 <Icon name="pin" size={28} color={C.border} />
                 <div style={{ fontSize: 13, textAlign: "center" }}>
                   No geocoded addresses.<br />
