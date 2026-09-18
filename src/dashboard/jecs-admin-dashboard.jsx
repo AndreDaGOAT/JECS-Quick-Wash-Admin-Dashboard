@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const SB_URL = "https://mylqkbpclcrqorjctjxn.supabase.co";
@@ -1026,6 +1026,29 @@ function DashboardTab({ onNavigate }) {
   );
 }
 
+// ── Error boundary — catches render errors so the whole dashboard doesn't crash
+class MapErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false, msg: "" }; }
+  static getDerivedStateFromError(err) { return { hasError: true, msg: err.message }; }
+  componentDidCatch(err) { console.error("[JECS] MapErrorBoundary caught:", err); }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: "2rem", textAlign: "center", color: "#EF4444", fontSize: 13 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>Map error — please refresh</div>
+          <div style={{ fontSize: 11, color: "#7A90B0" }}>{this.state.msg}</div>
+          <button
+            style={{ marginTop: 12, background: "#0284C7", color: "#fff", border: "none", borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}
+            onClick={() => this.setState({ hasError: false, msg: "" })}>
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ── Wash Pro Map — stable Leaflet instance ───────────────────────────────────
 function WashProMap({ rows, selectedId, onSelect }) {
   const mapRef     = useRef(null);  // DOM node
@@ -1097,9 +1120,10 @@ function WashProMap({ rows, selectedId, onSelect }) {
 
   // ── Update markers whenever rows or selectedId changes ───────────────────
   useEffect(() => {
-    // Poll until map is ready — handles the case where rows arrive
-    // before Leaflet finishes loading
+    let cancelled = false; // guard against updates after effect cleanup
+
     function tryUpdate(attempts = 0) {
+      if (cancelled) return; // component unmounted or effect re-ran — stop
       const L   = window.L;
       const map = leafRef.current;
       if (!L || !map) {
@@ -1107,108 +1131,130 @@ function WashProMap({ rows, selectedId, onSelect }) {
         return;
       }
 
-      // Remove old cluster layer
-      if (clusterRef.current) {
-        map.removeLayer(clusterRef.current);
-        clusterRef.current = null;
-      }
+      try {
+        // Remove old cluster layer
+        if (clusterRef.current) {
+          try { map.removeLayer(clusterRef.current); } catch (_) {}
+          clusterRef.current = null;
+        }
 
-      const cluster = L.markerClusterGroup({
-        maxClusterRadius:    55,
-        spiderfyOnMaxZoom:   true,
-        showCoverageOnHover: false,
-        zoomToBoundsOnClick: true,
-        iconCreateFunction(c) {
-          const n    = c.getChildCount();
-          const size = n < 10 ? 34 : n < 50 ? 42 : 50;
-          return L.divIcon({
-            className: "",
-            html: `<div style="width:${size}px;height:${size}px;border-radius:50%;
-              background:#0284C7;border:3px solid #fff;color:#fff;
-              font-weight:800;font-size:${n < 10 ? 13 : 11}px;
-              display:flex;align-items:center;justify-content:center;
-              box-shadow:0 3px 10px rgba(2,132,199,0.45);">${n}</div>`,
-            iconSize:   [size, size],
-            iconAnchor: [size / 2, size / 2],
-          });
-        },
-      });
-
-      markersRef.current = {};
-      const valid  = rows.filter(r => r.customer_lat && r.customer_lng);
-      const bounds = [];
-
-      valid.forEach(a => {
-        const isSel = a.appointment_id === selectedId;
-        const color = STATUS_COLORS[a.appointment_status] || "#7A90B0";
-        const size  = isSel ? 22 : 14;
-        const time  = a.scheduled_start
-          ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-          : "—";
-
-        const icon = L.divIcon({
-          className: "",
-          html: `<span style="display:block;width:${size}px;height:${size}px;border-radius:50%;
-            background:${color};border:${isSel ? 3 : 2}px solid #fff;
-            box-shadow:${isSel ? `0 0 0 4px ${color}44,` : ""}0 2px 6px rgba(0,0,0,0.3)"></span>`,
-          iconSize:    [size, size],
-          iconAnchor:  [size / 2, size / 2],
-          popupAnchor: [0, -(size + 4)],
+        const cluster = L.markerClusterGroup({
+          maxClusterRadius:    55,
+          spiderfyOnMaxZoom:   true,
+          showCoverageOnHover: false,
+          zoomToBoundsOnClick: true,
+          iconCreateFunction(c) {
+            const n    = c.getChildCount();
+            const size = n < 10 ? 34 : n < 50 ? 42 : 50;
+            return L.divIcon({
+              className: "",
+              html: `<div style="width:${size}px;height:${size}px;border-radius:50%;
+                background:#0284C7;border:3px solid #fff;color:#fff;
+                font-weight:800;font-size:${n < 10 ? 13 : 11}px;
+                display:flex;align-items:center;justify-content:center;
+                box-shadow:0 3px 10px rgba(2,132,199,0.45);">${n}</div>`,
+              iconSize:   [size, size],
+              iconAnchor: [size / 2, size / 2],
+            });
+          },
         });
 
-        const marker = L.marker([a.customer_lat, a.customer_lng], {
-          icon, zIndexOffset: isSel ? 1000 : 0,
-        })
-          .bindPopup(`
-            <div style="font-family:Inter,sans-serif;min-width:200px;font-size:13px;line-height:1.5">
-              <div style="font-weight:700;color:#172033;margin-bottom:2px">${a.customer_name || "—"}</div>
-              <div style="color:#65738A;font-size:11px;margin-bottom:5px">${time} · ${a.appointment_status}</div>
-              <div style="font-size:12px;color:#172033;margin-bottom:3px">${a.customer_address || "—"}</div>
-              ${a.vehicle_summary && a.vehicle_summary !== "—"
-                ? `<div style="font-size:11px;color:#D4A843;margin-top:3px">🚗 ${a.vehicle_summary}</div>` : ""}
-            </div>`, { maxWidth: 280 })
-          .on("click", () => onSelectRef.current(a.appointment_id));
+        markersRef.current = {};
+        const valid  = rows.filter(r => r.customer_lat && r.customer_lng);
+        const bounds = [];
 
-        cluster.addLayer(marker);
-        markersRef.current[a.appointment_id] = marker;
-        bounds.push([a.customer_lat, a.customer_lng]);
-      });
+        valid.forEach(a => {
+          if (cancelled) return;
+          const isSel = a.appointment_id === selectedId;
+          const color = STATUS_COLORS[a.appointment_status] || "#7A90B0";
+          const size  = isSel ? 22 : 14;
+          const time  = a.scheduled_start
+            ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+            : "—";
 
-      // Route polyline through active jobs
-      map.eachLayer(l => { if (l._isRoute) map.removeLayer(l); });
-      const routePts = valid
-        .filter(r => !["Completed","Cancelled","Rescheduled"].includes(r.appointment_status))
-        .sort((a, b) => (a.scheduled_start || "").localeCompare(b.scheduled_start || ""))
-        .map(r => [r.customer_lat, r.customer_lng]);
+          const icon = L.divIcon({
+            className: "",
+            html: `<span style="display:block;width:${size}px;height:${size}px;border-radius:50%;
+              background:${color};border:${isSel ? 3 : 2}px solid #fff;
+              box-shadow:${isSel ? `0 0 0 4px ${color}44,` : ""}0 2px 6px rgba(0,0,0,0.3)"></span>`,
+            iconSize:    [size, size],
+            iconAnchor:  [size / 2, size / 2],
+            popupAnchor: [0, -(size + 4)],
+          });
 
-      if (routePts.length > 1) {
-        const line = L.polyline(routePts, {
-          color: "#0284C7", weight: 2.5, opacity: 0.55, dashArray: "8 10",
-        }).addTo(map);
-        line._isRoute = true;
+          const marker = L.marker([a.customer_lat, a.customer_lng], {
+            icon, zIndexOffset: isSel ? 1000 : 0,
+          })
+            .bindPopup(`
+              <div style="font-family:Inter,sans-serif;min-width:200px;font-size:13px;line-height:1.5">
+                <div style="font-weight:700;color:#172033;margin-bottom:2px">${a.customer_name || "—"}</div>
+                <div style="color:#65738A;font-size:11px;margin-bottom:5px">${time} · ${a.appointment_status}</div>
+                <div style="font-size:12px;color:#172033;margin-bottom:3px">${a.customer_address || "—"}</div>
+                ${a.vehicle_summary && a.vehicle_summary !== "—"
+                  ? `<div style="font-size:11px;color:#D4A843;margin-top:3px">🚗 ${a.vehicle_summary}</div>` : ""}
+              </div>`, { maxWidth: 280 })
+            .on("click", () => onSelectRef.current(a.appointment_id));
+
+          cluster.addLayer(marker);
+          markersRef.current[a.appointment_id] = marker;
+          bounds.push([a.customer_lat, a.customer_lng]);
+        });
+
+        if (cancelled) return;
+
+        // Route polyline through active jobs
+        map.eachLayer(l => { if (l._isRoute) { try { map.removeLayer(l); } catch (_) {} } });
+        const routePts = valid
+          .filter(r => !["Completed","Cancelled","Rescheduled"].includes(r.appointment_status))
+          .sort((a, b) => (a.scheduled_start || "").localeCompare(b.scheduled_start || ""))
+          .map(r => [r.customer_lat, r.customer_lng]);
+
+        if (routePts.length > 1) {
+          const line = L.polyline(routePts, {
+            color: "#0284C7", weight: 2.5, opacity: 0.55, dashArray: "8 10",
+          }).addTo(map);
+          line._isRoute = true;
+        }
+
+        map.addLayer(cluster);
+        clusterRef.current = cluster;
+
+        if (bounds.length > 0) {
+          try { map.fitBounds(L.latLngBounds(bounds).pad(0.15)); } catch (_) {}
+        }
+
+        if (!cancelled) setTimeout(() => {
+          if (!cancelled && leafRef.current) leafRef.current.invalidateSize();
+        }, 120);
+
+      } catch (err) {
+        console.warn("[JECS] WashProMap update error:", err.message);
       }
-
-      map.addLayer(cluster);
-      clusterRef.current = cluster;
-
-      if (bounds.length > 0) {
-        try { map.fitBounds(L.latLngBounds(bounds).pad(0.15)); } catch (_) {}
-      }
-
-      setTimeout(() => map.invalidateSize(), 120);
     }
 
     tryUpdate();
-  }, [rows, selectedId]); // re-run whenever data changes
+
+    // Cleanup: cancel any in-flight polls when rows/selectedId changes
+    // or when component unmounts
+    return () => { cancelled = true; };
+  }, [rows, selectedId]);
 
   // ── Pan to selected marker ────────────────────────────────────────────────
   useEffect(() => {
     if (!selectedId || !leafRef.current) return;
+    let cancelled = false;
     const marker = markersRef.current[selectedId];
     if (marker) {
-      leafRef.current.panTo(marker.getLatLng(), { animate: true, duration: 0.35 });
-      setTimeout(() => marker.openPopup(), 400);
+      try {
+        leafRef.current.panTo(marker.getLatLng(), { animate: true, duration: 0.35 });
+        setTimeout(() => {
+          if (!cancelled && leafRef.current) {
+            try { marker.openPopup(); } catch (_) {}
+          }
+        }, 400);
+      } catch (_) {}
     }
+    return () => { cancelled = true; };
   }, [selectedId]);
 
   return (
@@ -1394,11 +1440,14 @@ function WashProTab() {
 
           {/* ── LEFT: Clustered map — always mounted ────────────────────── */}
           <div style={{ position: "relative", minHeight: 0 }}>
-            <WashProMap
-              rows={filtered}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-            />
+            <MapErrorBoundary>
+              <WashProMap
+                rows={filtered}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+              />
+            </MapErrorBoundary>
+            </MapErrorBoundary>
             {!rows.some(r => r.customer_lat && r.customer_lng) && (
               <div style={{
                 position: "absolute", inset: 0,
