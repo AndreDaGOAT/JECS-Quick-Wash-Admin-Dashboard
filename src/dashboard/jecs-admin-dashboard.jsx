@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const SB_URL = "https://mylqkbpclcrqorjctjxn.supabase.co";
@@ -1027,300 +1027,51 @@ function DashboardTab({ onNavigate }) {
 }
 
 // ── Error boundary — catches render errors so the whole dashboard doesn't crash
-class MapErrorBoundary extends React.Component {
-  constructor(props) { super(props); this.state = { hasError: false, msg: "" }; }
-  static getDerivedStateFromError(err) { return { hasError: true, msg: err.message }; }
-  componentDidCatch(err) { console.error("[JECS] MapErrorBoundary caught:", err); }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div style={{ padding: "2rem", textAlign: "center", color: "#EF4444", fontSize: 13 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>Map error — please refresh</div>
-          <div style={{ fontSize: 11, color: "#7A90B0" }}>{this.state.msg}</div>
-          <button
-            style={{ marginTop: 12, background: "#0284C7", color: "#fff", border: "none", borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}
-            onClick={() => this.setState({ hasError: false, msg: "" })}>
-            Retry
-          </button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-// ── Wash Pro Map — stable Leaflet instance ───────────────────────────────────
-function WashProMap({ rows, selectedId, onSelect }) {
-  const mapRef     = useRef(null);  // DOM node
-  const leafRef    = useRef(null);  // L.map instance
-  const clusterRef = useRef(null);  // L.markerClusterGroup instance
-  const markersRef = useRef({});    // { appointment_id: L.marker }
-  const onSelectRef = useRef(onSelect); // stable ref to avoid stale closure
-
-  // Keep onSelect ref current
-  useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
-
-  // ── Initialise Leaflet once on mount ─────────────────────────────────────
-  useEffect(() => {
-    function initMap() {
-      if (!mapRef.current || leafRef.current) return;
-      const L   = window.L;
-      const map = L.map(mapRef.current, { zoomControl: true })
-        .setView([35.1495, -90.0490], 11);
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      }).addTo(map);
-      leafRef.current = map;
-    }
-
-    function waitForLeaflet(attempts = 0) {
-      if (window.L && window.L.markerClusterGroup) { initMap(); return; }
-      if (attempts > 50) { console.error("[JECS] Leaflet failed to load after 7.5s"); return; }
-      setTimeout(() => waitForLeaflet(attempts + 1), 150);
-    }
-
-    function loadScript(src, id, cb) {
-      if (document.getElementById(id)) { cb(); return; }
-      const s  = document.createElement("script");
-      s.id     = id;
-      s.src    = src;
-      s.onload = cb;
-      s.onerror = () => console.error("[JECS] Failed to load:", src);
-      document.head.appendChild(s);
-    }
-
-    function injectCSS(href, id) {
-      if (document.getElementById(id)) return;
-      const l = document.createElement("link");
-      l.id = id; l.rel = "stylesheet"; l.href = href;
-      document.head.appendChild(l);
-    }
-
-    injectCSS("https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",                              "lf-css");
-    injectCSS("https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css",          "mc-css");
-    injectCSS("https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css",  "mc-def-css");
-
-    loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js", "lf-js", () => {
-      loadScript("https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js", "mc-js",
-        () => waitForLeaflet()
-      );
-    });
-
-    // Destroy map only on true unmount (component removed from tree)
-    return () => {
-      if (leafRef.current) {
-        leafRef.current.remove();
-        leafRef.current  = null;
-        clusterRef.current = null;
-        markersRef.current = {};
-      }
-    };
-  }, []); // empty deps — run once only
-
-  // ── Update markers whenever rows or selectedId changes ───────────────────
-  useEffect(() => {
-    let cancelled = false; // guard against updates after effect cleanup
-
-    function tryUpdate(attempts = 0) {
-      if (cancelled) return; // component unmounted or effect re-ran — stop
-      const L   = window.L;
-      const map = leafRef.current;
-      if (!L || !map) {
-        if (attempts < 40) setTimeout(() => tryUpdate(attempts + 1), 150);
-        return;
-      }
-
-      try {
-        // Remove old cluster layer
-        if (clusterRef.current) {
-          try { map.removeLayer(clusterRef.current); } catch (_) {}
-          clusterRef.current = null;
-        }
-
-        const cluster = L.markerClusterGroup({
-          maxClusterRadius:    55,
-          spiderfyOnMaxZoom:   true,
-          showCoverageOnHover: false,
-          zoomToBoundsOnClick: true,
-          iconCreateFunction(c) {
-            const n    = c.getChildCount();
-            const size = n < 10 ? 34 : n < 50 ? 42 : 50;
-            return L.divIcon({
-              className: "",
-              html: `<div style="width:${size}px;height:${size}px;border-radius:50%;
-                background:#0284C7;border:3px solid #fff;color:#fff;
-                font-weight:800;font-size:${n < 10 ? 13 : 11}px;
-                display:flex;align-items:center;justify-content:center;
-                box-shadow:0 3px 10px rgba(2,132,199,0.45);">${n}</div>`,
-              iconSize:   [size, size],
-              iconAnchor: [size / 2, size / 2],
-            });
-          },
-        });
-
-        markersRef.current = {};
-        const valid  = rows.filter(r => r.customer_lat && r.customer_lng);
-        const bounds = [];
-
-        valid.forEach(a => {
-          if (cancelled) return;
-          const isSel = a.appointment_id === selectedId;
-          const color = STATUS_COLORS[a.appointment_status] || "#7A90B0";
-          const size  = isSel ? 22 : 14;
-          const time  = a.scheduled_start
-            ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-            : "—";
-
-          const icon = L.divIcon({
-            className: "",
-            html: `<span style="display:block;width:${size}px;height:${size}px;border-radius:50%;
-              background:${color};border:${isSel ? 3 : 2}px solid #fff;
-              box-shadow:${isSel ? `0 0 0 4px ${color}44,` : ""}0 2px 6px rgba(0,0,0,0.3)"></span>`,
-            iconSize:    [size, size],
-            iconAnchor:  [size / 2, size / 2],
-            popupAnchor: [0, -(size + 4)],
-          });
-
-          const marker = L.marker([a.customer_lat, a.customer_lng], {
-            icon, zIndexOffset: isSel ? 1000 : 0,
-          })
-            .bindPopup(`
-              <div style="font-family:Inter,sans-serif;min-width:200px;font-size:13px;line-height:1.5">
-                <div style="font-weight:700;color:#172033;margin-bottom:2px">${a.customer_name || "—"}</div>
-                <div style="color:#65738A;font-size:11px;margin-bottom:5px">${time} · ${a.appointment_status}</div>
-                <div style="font-size:12px;color:#172033;margin-bottom:3px">${a.customer_address || "—"}</div>
-                ${a.vehicle_summary && a.vehicle_summary !== "—"
-                  ? `<div style="font-size:11px;color:#D4A843;margin-top:3px">🚗 ${a.vehicle_summary}</div>` : ""}
-              </div>`, { maxWidth: 280 })
-            .on("click", () => onSelectRef.current(a.appointment_id));
-
-          cluster.addLayer(marker);
-          markersRef.current[a.appointment_id] = marker;
-          bounds.push([a.customer_lat, a.customer_lng]);
-        });
-
-        if (cancelled) return;
-
-        // Route polyline through active jobs
-        map.eachLayer(l => { if (l._isRoute) { try { map.removeLayer(l); } catch (_) {} } });
-        const routePts = valid
-          .filter(r => !["Completed","Cancelled","Rescheduled"].includes(r.appointment_status))
-          .sort((a, b) => (a.scheduled_start || "").localeCompare(b.scheduled_start || ""))
-          .map(r => [r.customer_lat, r.customer_lng]);
-
-        if (routePts.length > 1) {
-          const line = L.polyline(routePts, {
-            color: "#0284C7", weight: 2.5, opacity: 0.55, dashArray: "8 10",
-          }).addTo(map);
-          line._isRoute = true;
-        }
-
-        map.addLayer(cluster);
-        clusterRef.current = cluster;
-
-        if (bounds.length > 0) {
-          try { map.fitBounds(L.latLngBounds(bounds).pad(0.15)); } catch (_) {}
-        }
-
-        if (!cancelled) setTimeout(() => {
-          if (!cancelled && leafRef.current) leafRef.current.invalidateSize();
-        }, 120);
-
-      } catch (err) {
-        console.warn("[JECS] WashProMap update error:", err.message);
-      }
-    }
-
-    tryUpdate();
-
-    // Cleanup: cancel any in-flight polls when rows/selectedId changes
-    // or when component unmounts
-    return () => { cancelled = true; };
-  }, [rows, selectedId]);
-
-  // ── Pan to selected marker ────────────────────────────────────────────────
-  useEffect(() => {
-    if (!selectedId || !leafRef.current) return;
-    let cancelled = false;
-    const marker = markersRef.current[selectedId];
-    if (marker) {
-      try {
-        leafRef.current.panTo(marker.getLatLng(), { animate: true, duration: 0.35 });
-        setTimeout(() => {
-          if (!cancelled && leafRef.current) {
-            try { marker.openPopup(); } catch (_) {}
-          }
-        }, 400);
-      } catch (_) {}
-    }
-    return () => { cancelled = true; };
-  }, [selectedId]);
-
-  return (
-    <div ref={mapRef} style={{
-      width: "100%", height: "100%", minHeight: 500,
-      background: C.surfaceAlt,
-    }} />
-  );
-}
-
-
-// ── Wash Pro Tab — scales to 140+ appointments ────────────────────────────────
+// ── Wash Pro View ─────────────────────────────────────────────────────────────
 function WashProTab() {
-  const todayStr  = new Date().toISOString().slice(0, 10);
+  const todayStr = new Date().toISOString().slice(0, 10);
   const [selectedDate, setSelectedDate] = useState(todayStr);
-  const [rows,       setRows]      = useState([]);
-  const [loading,    setLoading]   = useState(true);
-  const [toast,      setToast]     = useState("");
-  const [selectedId, setSelectedId] = useState(null);
-
-  // ── Filter state ──────────────────────────────────────────────────────────
+  const [rows,    setRows]    = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [toast,   setToast]   = useState("");
   const [fStatus, setFStatus] = useState("all");
   const [fZip,    setFZip]    = useState("");
   const [fWindow, setFWindow] = useState("all");
 
   const showToast = (m) => { setToast(m); setTimeout(() => setToast(""), 3000); };
 
-  // ── Load — single batch query, vehicle lookup cached by vehicle_id ────────
+  // ── Load — batch queries, no N+1 ─────────────────────────────────────────
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      // Batch fetch — customers embedded in one request
       const appts = await sbFetch(
         `appointments?select=*,customers(full_name,formatted_address,latitude,longitude,phone_number,zip_code)&scheduled_start=gte.${selectedDate}T00:00:00&scheduled_start=lte.${selectedDate}T23:59:59&order=scheduled_start.asc&limit=500`
       ) || [];
 
-      // Batch-collect all unique vehicle_ids from service_requests
-      // Single query instead of N queries
+      // Batch vehicle lookups
       const srIds = appts.map(a => a.service_request_id).filter(Boolean);
-      let srMap   = {};
+      let srMap = {};
       if (srIds.length > 0) {
         try {
-          const srs = await sbFetch(
-            `service_requests?request_id=in.(${srIds.join(",")})&select=request_id,vehicle_id`
-          ) || [];
+          const srs = await sbFetch(`service_requests?request_id=in.(${srIds.join(",")})&select=request_id,vehicle_id`) || [];
           srs.forEach(s => { srMap[s.request_id] = s.vehicle_id; });
         } catch (_) {}
       }
 
-      // Batch-collect all unique vehicle records
-      const vIds  = [...new Set(Object.values(srMap).filter(Boolean))];
-      let vehMap  = {};
+      const vIds = [...new Set(Object.values(srMap).filter(Boolean))];
+      let vehMap = {};
       if (vIds.length > 0) {
         try {
-          const vehs = await sbFetch(
-            `vehicles?vehicle_id=in.(${vIds.join(",")})&select=vehicle_id,vehicle_type,license_plate`
-          ) || [];
+          const vehs = await sbFetch(`vehicles?vehicle_id=in.(${vIds.join(",")})&select=vehicle_id,vehicle_type,license_plate`) || [];
           vehs.forEach(v => { vehMap[v.vehicle_id] = v; });
         } catch (_) {}
       }
 
       const enriched = appts.map(a => {
-        const vid  = srMap[a.service_request_id];
-        const veh  = vid ? vehMap[vid] : null;
-        const lat  = parseFloat(a.customers?.latitude);
-        const lng  = parseFloat(a.customers?.longitude);
+        const vid = srMap[a.service_request_id];
+        const veh = vid ? vehMap[vid] : null;
+        const lat = parseFloat(a.customers?.latitude);
+        const lng = parseFloat(a.customers?.longitude);
         return {
           ...a,
           customer_name:    a.customers?.full_name         || "—",
@@ -1335,8 +1086,7 @@ function WashProTab() {
       });
 
       setRows(enriched);
-      setSelectedId(enriched[0]?.appointment_id || null);
-    } catch (e) { console.error(e); setRows([]); }
+    } catch (e) { console.error("[JECS] WashProTab load error:", e); setRows([]); }
     setLoading(false);
   }, [selectedDate]);
 
@@ -1350,7 +1100,7 @@ function WashProTab() {
     } catch (e) { showToast("Error: " + e.message); }
   }
 
-  // ── Apply filters ─────────────────────────────────────────────────────────
+  // ── Filters ───────────────────────────────────────────────────────────────
   const filtered = rows.filter(a => {
     if (fStatus !== "all" && a.appointment_status !== fStatus) return false;
     if (fZip && !(a.customer_zip || "").includes(fZip)) return false;
@@ -1358,12 +1108,43 @@ function WashProTab() {
     return true;
   });
 
+  // ── Google Maps helpers ───────────────────────────────────────────────────
+  function mapsUrl(address) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+  }
+
+  function directionsUrl(address) {
+    return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}`;
+  }
+
+  // "View All on Map" — opens multi-stop route for active jobs in time order
+  function viewAllOnMap() {
+    const active = filtered
+      .filter(a => !["Completed","Cancelled","Rescheduled"].includes(a.appointment_status))
+      .sort((a, b) => (a.scheduled_start || "").localeCompare(b.scheduled_start || ""));
+
+    if (active.length === 0) { showToast("No active jobs to map."); return; }
+    if (active.length === 1) {
+      window.open(mapsUrl(active[0].customer_address), "_blank");
+      return;
+    }
+
+    // Google Maps directions with waypoints
+    const origin      = encodeURIComponent(active[0].customer_address);
+    const destination = encodeURIComponent(active[active.length - 1].customer_address);
+    const waypoints   = active.slice(1, -1)
+      .map(a => encodeURIComponent(a.customer_address))
+      .join("|");
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypoints ? `&waypoints=${waypoints}` : ""}`;
+    window.open(url, "_blank");
+  }
+
   const isToday   = selectedDate === todayStr;
   const dateLabel = isToday
     ? "Today"
     : new Date(selectedDate + "T12:00:00").toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
 
-  // Status counts across ALL rows (not filtered) for summary
+  // Pipeline counts for summary pills
   const counts = {};
   STATUS_PIPELINE.forEach(s => { counts[s] = rows.filter(r => r.appointment_status === s).length; });
 
@@ -1373,26 +1154,48 @@ function WashProTab() {
     fontSize: 12, outline: "none",
   };
 
+  const th = {
+    padding: "8px 14px", textAlign: "left", fontSize: 11,
+    fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em",
+    textTransform: "uppercase", background: `${C.border}55`,
+    borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap",
+  };
+
+  const td = {
+    padding: "12px 14px", borderBottom: `1px solid ${C.border}22`,
+    verticalAlign: "middle", color: C.text, fontSize: 13,
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)", minHeight: 0 }}>
+    <div>
       <Toast msg={toast} />
 
-      {/* ── Header ─────────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", flexWrap: "wrap", gap: 8 }}>
+      {/* ── Header ── */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Icon name="washpro" size={20} color={C.accentLight} />
           <span style={{ fontSize: 18, fontWeight: 700, color: C.text }}>Wash Pro View</span>
           <span style={{ fontSize: 13, color: isToday ? C.gold : C.accentLight, fontWeight: 600 }}>{dateLabel}</span>
-          <span style={{ fontSize: 11, background: `${C.accent}22`, color: C.accentLight, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
-            {rows.length} appointments
-          </span>
+          {rows.length > 0 && (
+            <span style={{ fontSize: 11, background: `${C.accent}22`, color: C.accentLight, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
+              {rows.length} appointments
+            </span>
+          )}
         </div>
-        <button style={btn("ghost", true)} onClick={load}>
-          <Icon name="refresh" size={12} /> Refresh
-        </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {/* View all on Google Maps */}
+          {filtered.some(a => a.customer_address && a.customer_address !== "—") && (
+            <button style={{ ...btn("primary", true), gap: 5 }} onClick={viewAllOnMap}>
+              🗺 View Route on Maps
+            </button>
+          )}
+          <button style={btn("ghost", true)} onClick={load}>
+            <Icon name="refresh" size={12} /> Refresh
+          </button>
+        </div>
       </div>
 
-      {/* ── Pipeline summary bar ────────────────────────────────────────── */}
+      {/* ── Status pipeline pills ── */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: "0.75rem" }}>
         {STATUS_PIPELINE.filter(s => counts[s] > 0).map(s => {
           const col    = statusColor(s);
@@ -1400,10 +1203,11 @@ function WashProTab() {
           return (
             <div key={s} onClick={() => setFStatus(active ? "all" : s)}
               style={{
-                padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11,
-                fontWeight: 700, background: active ? `${col}33` : `${col}11`,
-                border: `1px solid ${active ? col : `${col}33`}`, color: col,
-                transition: "all 0.12s",
+                padding: "4px 10px", borderRadius: 6, cursor: "pointer",
+                fontSize: 11, fontWeight: 700,
+                background: active ? `${col}33` : `${col}11`,
+                border: `1px solid ${active ? col : `${col}33`}`,
+                color: col, transition: "all 0.12s",
               }}>
               {counts[s]} {s}
             </div>
@@ -1416,187 +1220,186 @@ function WashProTab() {
         )}
       </div>
 
-      {/* ── Date strip ─────────────────────────────────────────────────── */}
+      {/* ── Date strip ── */}
       <DateStrip selectedDate={selectedDate} onSelect={setSelectedDate} rangedays={7} />
 
-      {loading ? (
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: C.textMuted }}>
-          Loading {rows.length || ""} appointments for {dateLabel}…
-        </div>
-      ) : rows.length === 0 ? (
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: C.textMuted, fontSize: 13 }}>
-          No appointments scheduled for {dateLabel}.
-        </div>
-      ) : (
-        <div style={{
-          flex: 1, minHeight: 0,
-          display: "grid",
-          gridTemplateColumns: "3fr 2fr",
-          border: `1px solid ${C.border}`,
-          borderRadius: 10,
-          overflow: "hidden",
-          background: C.surfaceAlt,
-        }}>
+      {/* ── Filter bar ── */}
+      <div style={{
+        display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
+        padding: "10px 14px", background: C.surfaceAlt,
+        border: `1px solid ${C.border}`, borderRadius: "8px 8px 0 0",
+        borderBottom: "none",
+      }}>
+        <select style={inp} value={fStatus} onChange={e => setFStatus(e.target.value)}>
+          <option value="all">All Statuses</option>
+          {STATUS_PIPELINE.map(s => <option key={s} value={s}>{s}</option>)}
+          <option value="Cancelled">Cancelled</option>
+          <option value="Rescheduled">Rescheduled</option>
+        </select>
+        <select style={inp} value={fWindow} onChange={e => setFWindow(e.target.value)}>
+          <option value="all">All Time Windows</option>
+          <option value="8AM-11AM">8AM – 11AM</option>
+          <option value="11AM-2PM">11AM – 2PM</option>
+          <option value="2PM-5PM">2PM – 5PM</option>
+        </select>
+        <input style={{ ...inp, width: 90 }} placeholder="ZIP code" maxLength={5}
+          value={fZip} onChange={e => setFZip(e.target.value)} />
+        <span style={{ fontSize: 12, color: C.textMuted, marginLeft: "auto" }}>
+          Showing <span style={{ color: C.accentLight, fontWeight: 700 }}>{filtered.length}</span> of {rows.length}
+          {(fStatus !== "all" || fZip || fWindow !== "all") && (
+            <button style={{ marginLeft: 8, background: "none", border: "none", color: C.danger, fontSize: 12, cursor: "pointer", fontWeight: 600 }}
+              onClick={() => { setFStatus("all"); setFZip(""); setFWindow("all"); }}>
+              Clear filters
+            </button>
+          )}
+        </span>
+      </div>
 
-          {/* ── LEFT: Clustered map — always mounted ────────────────────── */}
-          <div style={{ position: "relative", minHeight: 0 }}>
-            <MapErrorBoundary>
-              <WashProMap
-                rows={filtered}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-              />
-            </MapErrorBoundary>
-            </MapErrorBoundary>
-            {!rows.some(r => r.customer_lat && r.customer_lng) && (
-              <div style={{
-                position: "absolute", inset: 0,
-                display: "flex", flexDirection: "column",
-                alignItems: "center", justifyContent: "center",
-                background: `${C.surfaceAlt}ee`, pointerEvents: "none",
-                color: C.textMuted, gap: 8, padding: "2rem",
-              }}>
-                <Icon name="pin" size={28} color={C.border} />
-                <div style={{ fontSize: 13, textAlign: "center" }}>
-                  No geocoded addresses.<br />
-                  <span style={{ fontSize: 11 }}>Customer latitude/longitude needed for map pins.</span>
-                </div>
-              </div>
-            )}
+      {/* ── Table ── */}
+      <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
+        {loading ? (
+          <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted }}>
+            Loading appointments for {dateLabel}…
           </div>
-
-          {/* ── RIGHT: Filtered cards ───────────────────────────────── */}
-          <div style={{ borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", minHeight: 0 }}>
-
-            {/* Filter bar */}
-            <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 6, flexShrink: 0, background: C.surface }}>
-              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                <select style={inp} value={fStatus} onChange={e => setFStatus(e.target.value)}>
-                  <option value="all">All Statuses</option>
-                  {STATUS_PIPELINE.map(s => <option key={s} value={s}>{s}</option>)}
-                  <option value="Cancelled">Cancelled</option>
-                  <option value="Rescheduled">Rescheduled</option>
-                </select>
-                <select style={inp} value={fWindow} onChange={e => setFWindow(e.target.value)}>
-                  <option value="all">All Windows</option>
-                  <option value="8AM-11AM">8AM – 11AM</option>
-                  <option value="11AM-2PM">11AM – 2PM</option>
-                  <option value="2PM-5PM">2PM – 5PM</option>
-                </select>
-                <input style={{ ...inp, width: 80 }} placeholder="ZIP" maxLength={5}
-                  value={fZip} onChange={e => setFZip(e.target.value)} />
-              </div>
-              <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 600 }}>
-                Showing <span style={{ color: C.accentLight }}>{filtered.length}</span> of {rows.length}
-                {(fStatus !== "all" || fZip || fWindow !== "all") && (
-                  <button style={{ marginLeft: 8, background: "none", border: "none", color: C.danger, fontSize: 11, cursor: "pointer", fontWeight: 600 }}
-                    onClick={() => { setFStatus("all"); setFZip(""); setFWindow("all"); }}>
-                    Clear filters
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Scrollable cards */}
-            <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
-              {filtered.length === 0 ? (
-                <div style={{ padding: "2rem", textAlign: "center", color: C.textMuted, fontSize: 12 }}>
-                  No appointments match these filters.
-                </div>
-              ) : (
-                filtered.map(a => {
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: "3rem", textAlign: "center", color: C.textMuted, fontSize: 13 }}>
+            {rows.length === 0
+              ? `No appointments scheduled for ${dateLabel}.`
+              : "No appointments match the current filters."}
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {["Time", "Customer", "Address", "Vehicle", "Status", "Actions"].map(h => (
+                    <th key={h} style={th}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(a => {
                   const currentIdx = STATUS_PIPELINE.indexOf(a.appointment_status);
                   const canAdvance = currentIdx >= 0 && currentIdx < STATUS_PIPELINE.length - 1;
                   const next       = canAdvance ? STATUS_PIPELINE[currentIdx + 1] : null;
                   const col        = statusColor(a.appointment_status);
-                  const isSelected = a.appointment_id === selectedId;
                   const time       = a.scheduled_start
                     ? new Date(a.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                     : "—";
+                  const hasAddress = a.customer_address && a.customer_address !== "—";
+                  const hasCoords  = a.customer_lat && a.customer_lng;
 
                   return (
-                    <div key={a.appointment_id}
-                      onClick={() => setSelectedId(a.appointment_id)}
-                      style={{
-                        padding: "12px 14px",
-                        borderLeft: `3px solid ${isSelected ? col : "transparent"}`,
-                        borderBottom: `1px solid ${C.border}`,
-                        background: isSelected ? `${col}12` : "transparent",
-                        cursor: "pointer",
-                        transition: "background 0.1s",
-                      }}>
+                    <tr key={a.appointment_id}
+                      style={{ borderLeft: `3px solid ${col}`, transition: "background 0.1s" }}
+                      onMouseEnter={e => e.currentTarget.style.background = C.surfaceHover}
+                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
 
-                      {/* Card header */}
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
-                        <div>
-                          <div style={{ fontWeight: 700, fontSize: 12, color: C.text }}>{a.customer_name}</div>
-                          <div style={{ fontSize: 10, color: C.accentLight }}>
-                            {time}{a.preferred_time_window ? ` · ${a.preferred_time_window}` : ""}
+                      {/* Time */}
+                      <td style={td}>
+                        <div style={{ fontWeight: 700, color: C.accentLight }}>{time}</div>
+                        {a.preferred_time_window && (
+                          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>
+                            {a.preferred_time_window}
                           </div>
-                        </div>
-                        <span style={{ ...pill(a.appointment_status), fontSize: 9, padding: "2px 7px" }}>
-                          {a.appointment_status}
-                        </span>
-                      </div>
+                        )}
+                      </td>
 
-                      {/* Address */}
-                      {a.customer_address !== "—" && (
-                        <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 3 }}>
-                          📍 {a.customer_address}
-                        </div>
-                      )}
+                      {/* Customer */}
+                      <td style={td}>
+                        <div style={{ fontWeight: 600 }}>{a.customer_name}</div>
+                        {a.customer_phone && a.customer_phone !== "—" && (
+                          <a href={`tel:${a.customer_phone}`}
+                            style={{ fontSize: 11, color: C.accentLight, textDecoration: "none", marginTop: 2, display: "block" }}>
+                            📞 {a.customer_phone}
+                          </a>
+                        )}
+                      </td>
 
-                      {/* Vehicle + plate on one line */}
-                      {a.vehicle_summary !== "—" && (
-                        <div style={{ fontSize: 10, color: C.text, marginBottom: 3 }}>
-                          🚗 {a.vehicle_summary}
-                          {a.license_plate !== "—" && (
-                            <span style={{ color: C.gold, fontWeight: 700, marginLeft: 6 }}>🪪 {a.license_plate}</span>
+                      {/* Address + Maps buttons */}
+                      <td style={td}>
+                        {hasAddress ? (
+                          <>
+                            <div style={{ fontSize: 12, color: C.text, marginBottom: 5 }}>
+                              {a.customer_address}
+                            </div>
+                            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                              <a href={mapsUrl(a.customer_address)} target="_blank" rel="noreferrer"
+                                style={{ ...btn("ghost", true), fontSize: 10, padding: "3px 8px", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 3 }}>
+                                📍 View
+                              </a>
+                              <a href={directionsUrl(a.customer_address)} target="_blank" rel="noreferrer"
+                                style={{ ...btn("primary", true), fontSize: 10, padding: "3px 8px", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 3 }}>
+                                🧭 Directions
+                              </a>
+                            </div>
+                          </>
+                        ) : (
+                          <span style={{ color: C.textMuted, fontSize: 12 }}>No address</span>
+                        )}
+                        {a.customer_notes && (
+                          <div style={{ fontSize: 11, color: C.warning, marginTop: 4 }}>
+                            ⚠ {a.customer_notes}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Vehicle */}
+                      <td style={td}>
+                        <div>{a.vehicle_summary !== "—" ? a.vehicle_summary : "—"}</div>
+                        {a.license_plate && a.license_plate !== "—" && (
+                          <div style={{ fontSize: 11, color: C.gold, fontWeight: 700, marginTop: 2 }}>
+                            🪪 {a.license_plate}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Status */}
+                      <td style={td}>
+                        <span style={pill(a.appointment_status)}>{a.appointment_status}</span>
+                        {/* Mini pipeline bar */}
+                        <div style={{ display: "flex", gap: 2, marginTop: 6 }}>
+                          {STATUS_PIPELINE.map((s, i) => (
+                            <div key={s} style={{
+                              flex: 1, height: 3, borderRadius: 2,
+                              background: STATUS_PIPELINE.indexOf(a.appointment_status) >= i
+                                ? statusColor(s) : C.border,
+                              opacity: a.appointment_status === s ? 1
+                                : STATUS_PIPELINE.indexOf(a.appointment_status) > i ? 0.7 : 0.2,
+                            }} title={s} />
+                          ))}
+                        </div>
+                      </td>
+
+                      {/* Actions */}
+                      <td style={{ ...td, whiteSpace: "nowrap" }}>
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                          {canAdvance && (
+                            <button
+                              style={{ ...btn("success", true), fontSize: 11 }}
+                              onClick={() => handleAdvance(a)}>
+                              <Icon name="arrow" size={11} /> {next}
+                            </button>
+                          )}
+                          {a.appointment_status === "Completed" && (
+                            <span style={{ fontSize: 11, color: C.success, fontWeight: 700 }}>
+                              ✓ Done
+                            </span>
                           )}
                         </div>
-                      )}
-
-                      {/* Notes */}
-                      {a.customer_notes && (
-                        <div style={{ fontSize: 10, color: C.warning, marginBottom: 4 }}>⚠ {a.customer_notes}</div>
-                      )}
-
-                      {/* Pipeline bar */}
-                      <div style={{ display: "flex", gap: 2, marginBottom: canAdvance ? 6 : 0 }}>
-                        {STATUS_PIPELINE.map((s, i) => (
-                          <div key={s} style={{
-                            flex: 1, height: 3, borderRadius: 2,
-                            background: STATUS_PIPELINE.indexOf(a.appointment_status) >= i
-                              ? statusColor(s) : C.border,
-                            opacity: a.appointment_status === s ? 1
-                              : STATUS_PIPELINE.indexOf(a.appointment_status) > i ? 0.7 : 0.2,
-                          }} title={s} />
-                        ))}
-                      </div>
-
-                      {/* Advance button */}
-                      {canAdvance && (
-                        <button
-                          style={{ ...btn("success", true), width: "100%", justifyContent: "center", fontSize: 10, padding: "4px 8px" }}
-                          onClick={e => { e.stopPropagation(); handleAdvance(a); }}>
-                          <Icon name="arrow" size={10} /> {next}
-                        </button>
-                      )}
-
-                      {a.appointment_status === "Completed" && (
-                        <div style={{ fontSize: 10, color: C.success, fontWeight: 700 }}>✓ Completed</div>
-                      )}
-                    </div>
+                      </td>
+                    </tr>
                   );
-                })
-              )}
-            </div>
+                })}
+              </tbody>
+            </table>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
+
 
 
 // ── Customers Tab (unchanged, from v1) ────────────────────────────────────────
