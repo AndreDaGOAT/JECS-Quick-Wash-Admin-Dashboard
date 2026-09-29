@@ -4,12 +4,62 @@ import { useState, useEffect, useCallback, useRef } from "react";
 const SB_URL = "https://mylqkbpclcrqorjctjxn.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15bHFrYnBjbGNycW9yamN0anhuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MjcxNzgsImV4cCI6MjA5NTMwMzE3OH0.yeZZHm0BEvrJShe8Wek5rfKAwunJQ8byKF1THbtwYYg";
 
-const ADMIN_EMAILS = [
-  "concierge@jubileeexecutivecarservice.com",
-  "contact@jubileeexecutivecarservice.com",
-  "aarmstrong1234@gmail.com",
-  "assistant@jubileeexecutivecarservice.com",
-];
+// Admin access is decided by the database (public.is_admin()), not by this file.
+// Admins sign in with a Supabase Auth email + password.
+let SESSION = null; // { access_token, refresh_token, email }
+const REFRESH_KEY = "jecs_admin_refresh";
+
+async function authToken(grantType, body) {
+  const res = await fetch(`${SB_URL}/auth/v1/token?grant_type=${grantType}`, {
+    method: "POST",
+    headers: { apikey: SB_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error_description || data.msg || "Sign-in failed.");
+  SESSION = { access_token: data.access_token, refresh_token: data.refresh_token, email: data.user?.email };
+  try { sessionStorage.setItem(REFRESH_KEY, data.refresh_token); } catch (_) {}
+  return SESSION;
+}
+
+async function requireAdmin() {
+  const ok = await sbFetch("rpc/is_admin", { method: "POST", body: "{}" });
+  if (ok !== true) {
+    adminSignOut();
+    throw new Error("Access denied. Authorised administrators only.");
+  }
+  return SESSION.email;
+}
+
+async function adminSignIn(email, password) {
+  await authToken("password", { email, password });
+  return requireAdmin();
+}
+
+// Restore a session after a page reload (same browser tab only).
+async function restoreSession() {
+  let rt = null;
+  try { rt = sessionStorage.getItem(REFRESH_KEY); } catch (_) {}
+  if (!rt) return null;
+  try {
+    await authToken("refresh_token", { refresh_token: rt });
+    return await requireAdmin();
+  } catch (_) {
+    adminSignOut();
+    return null;
+  }
+}
+
+function adminSignOut() {
+  if (SESSION?.access_token) {
+    fetch(`${SB_URL}/auth/v1/logout`, {
+      method: "POST",
+      headers: { apikey: SB_KEY, Authorization: `Bearer ${SESSION.access_token}` },
+    }).catch(() => {});
+  }
+  SESSION = null;
+  try { sessionStorage.removeItem(REFRESH_KEY); } catch (_) {}
+}
 
 // Appointment status pipeline
 const STATUS_PIPELINE = [
@@ -23,17 +73,23 @@ const STATUS_PIPELINE = [
 const STATUS_CANCELLED   = "Cancelled";
 const STATUS_RESCHEDULED = "Rescheduled";
 
-async function sbFetch(path, opts = {}) {
+async function sbFetch(path, opts = {}, retried = false) {
+  const { headers: extraHeaders, prefer, ...rest } = opts;
   const res = await fetch(`${SB_URL}/rest/v1/${path}`, {
+    ...rest,
     headers: {
       apikey: SB_KEY,
-      Authorization: `Bearer ${SB_KEY}`,
+      Authorization: `Bearer ${SESSION?.access_token || SB_KEY}`,
       "Content-Type": "application/json",
-      Prefer: opts.prefer || "return=representation",
-      ...opts.headers,
+      Prefer: prefer || "return=representation",
+      ...extraHeaders,
     },
-    ...opts,
   });
+  // Access tokens expire after ~1 hour: refresh once and retry.
+  if (res.status === 401 && SESSION?.refresh_token && !retried) {
+    await authToken("refresh_token", { refresh_token: SESSION.refresh_token });
+    return sbFetch(path, opts, true);
+  }
   if (!res.ok) {
     const txt = await res.text();
     throw new Error(txt);
@@ -193,13 +249,21 @@ function Toast({ msg }) {
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 function Login({ onLogin }) {
-  const [email, setEmail] = useState("");
-  const [err, setErr]     = useState("");
+  const [email, setEmail]       = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr]           = useState("");
+  const [busy, setBusy]         = useState(false);
 
-  function handle() {
-    const e = email.trim().toLowerCase();
-    if (ADMIN_EMAILS.includes(e)) onLogin(e);
-    else setErr("Access denied. Authorised administrators only.");
+  async function handle() {
+    if (busy) return;
+    setBusy(true); setErr("");
+    try {
+      onLogin(await adminSignIn(email.trim().toLowerCase(), password));
+    } catch (e) {
+      setErr(e.message || "Sign-in failed.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -241,6 +305,19 @@ function Login({ onLogin }) {
               onKeyDown={e => e.key === "Enter" && handle()}
             />
           </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase", display: "block", marginBottom: 6 }}>
+              Password
+            </label>
+            <input
+              style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", color: C.text, fontSize: 14, outline: "none", width: "100%", boxSizing: "border-box" }}
+              type="password"
+              value={password}
+              autoComplete="current-password"
+              onChange={e => { setPassword(e.target.value); setErr(""); }}
+              onKeyDown={e => e.key === "Enter" && handle()}
+            />
+          </div>
           {err && (
             <div style={{ fontSize: 12, color: C.danger, background: `${C.danger}11`, border: `1px solid ${C.danger}33`, borderRadius: 6, padding: "8px 12px" }}>
               {err}
@@ -248,8 +325,8 @@ function Login({ onLogin }) {
           )}
           <button
             style={{ ...btn("gold"), padding: "11px", width: "100%", justifyContent: "center", fontSize: 14, fontWeight: 700, borderRadius: 8 }}
-            onClick={handle}>
-            Sign In
+            onClick={handle} disabled={busy}>
+            {busy ? "Signing in…" : "Sign In"}
           </button>
         </div>
         <div style={{ marginTop: "1.75rem", fontSize: 11, color: C.textMuted, textAlign: "center", lineHeight: 1.7, borderTop: `1px solid ${C.border}`, paddingTop: "1rem" }}>
@@ -2319,9 +2396,15 @@ const NAV_COLORS = {
 };
 
 export default function App() {
-  const [user, setUser] = useState(null);
-  const [tab, setTab]   = useState("dashboard");
+  const [user, setUser]         = useState(null);
+  const [tab, setTab]           = useState("dashboard");
+  const [restoring, setRestoring] = useState(true);
 
+  useEffect(() => {
+    restoreSession().then(email => { if (email) setUser(email); }).finally(() => setRestoring(false));
+  }, []);
+
+  if (restoring) return null;
   if (!user) return <Login onLogin={setUser} />;
 
   const initials = user.split("@")[0].slice(0, 2).toUpperCase();
@@ -2337,7 +2420,7 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: C.textMuted }}>
           <span style={{ fontSize: 12 }}>{user}</span>
           <div style={{ width: 32, height: 32, borderRadius: "50%", background: `linear-gradient(135deg,${C.accent},${C.gold})`, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 13, color: "#fff" }}>{initials}</div>
-          <button style={{ ...btn("ghost", true), display: "flex", alignItems: "center", gap: 6 }} onClick={() => setUser(null)}>
+          <button style={{ ...btn("ghost", true), display: "flex", alignItems: "center", gap: 6 }} onClick={() => { adminSignOut(); setUser(null); }}>
             <Icon name="logout" size={13} /> Sign out
           </button>
         </div>
