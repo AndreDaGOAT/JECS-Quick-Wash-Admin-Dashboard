@@ -2381,6 +2381,7 @@ const NAV = [
   { id: "dashboard",    label: "Dashboard",         icon: "dashboard" },
   { id: "appointments", label: "Appointments",      icon: "appointments" },
   { id: "washpro",      label: "Wash Pro View",     icon: "washpro" },
+  { id: "coverage",     label: "Day Coverage",      icon: "clock" },
   { id: "customers",    label: "Customers",         icon: "customers" },
   { id: "packages",     label: "Service Packages",  icon: "packages" },
   { id: "washpros",     label: "Wash Pro Profiles", icon: "washpros" },
@@ -2390,10 +2391,421 @@ const NAV_COLORS = {
   dashboard:    C.accentLight,
   appointments: C.accentLight,
   washpro:      C.success,
+  coverage:     C.accentLight,
   customers:    C.gold,
   packages:     C.gold,
   washpros:     C.purple,
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COVERAGE TAB — how the day is loaded, and the setup the planner depends on
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function localDateStr(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function shiftDay(dateStr, days) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return localDateStr(new Date(y, m - 1, d + days));
+}
+function fmtMins(n) {
+  if (n == null) return "—";
+  const h = Math.floor(n / 60), m = n % 60;
+  if (h && m) return `${h}h ${m}m`;
+  if (h)      return `${h}h`;
+  return `${m}m`;
+}
+function fmtClock(ts) {
+  if (!ts) return "—";
+  const m = String(ts).match(/T(\d{2}):(\d{2})/);
+  if (!m) return "—";
+  let h = parseInt(m[1], 10);
+  const sfx = h >= 12 ? "PM" : "AM";
+  if (h === 0) h = 12; else if (h > 12) h -= 12;
+  return `${h}:${m[2]} ${sfx}`;
+}
+
+function CoverageTab() {
+  const [date,      setDate]      = useState(localDateStr());
+  const [coverage,  setCoverage]  = useState([]);
+  const [uncovered, setUncovered] = useState([]);
+  const [pros,      setPros]      = useState([]);
+  const [facilities, setFacilities] = useState([]);
+  const [availability, setAvailability] = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [editing,   setEditing]   = useState(null);
+  const [toast,     setToast]     = useState("");
+
+  const showToast = m => { setToast(m); setTimeout(() => setToast(""), 3000); };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const body = JSON.stringify({ p_date: date });
+    const [cov, unc, pr, fac, av] = await Promise.all([
+      sbFetch("rpc/admin_day_coverage",  { method: "POST", body }).catch(() => []),
+      sbFetch("rpc/admin_uncovered_jobs", { method: "POST", body }).catch(() => []),
+      sbFetch("wash_pro_profiles?select=wash_pro_id,legal_name,worker_type,home_facility_id,base_address,base_latitude,base_longitude&active=eq.true&onboarding_status=eq.approved&order=legal_name.asc").catch(() => []),
+      sbFetch("jecs_facilities?select=facility_id,facility_name,latitude,longitude&active=eq.true&order=facility_name.asc").catch(() => []),
+      sbFetch("wash_pro_availability?select=*&active=eq.true").catch(() => []),
+    ]);
+    setCoverage(cov || []); setUncovered(unc || []); setPros(pr || []);
+    setFacilities(fac || []); setAvailability(av || []);
+    setLoading(false);
+  }, [date]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const noStart = pros.filter(p => !p.home_facility_id && p.base_latitude == null);
+  const noHours = pros.filter(p => !availability.some(a => a.wash_pro_id === p.wash_pro_id));
+  const proById = Object.fromEntries(pros.map(p => [p.wash_pro_id, p]));
+
+  const td = { padding: "12px 16px", borderBottom: `1px solid ${C.border}22`, color: C.text, fontSize: 13, verticalAlign: "middle" };
+  const th = { padding: "9px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase" };
+  const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden", marginBottom: "1.5rem" };
+
+  return (
+    <div>
+      <Toast msg={toast} />
+
+      {/* Header + date */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem", flexWrap: "wrap", gap: 12 }}>
+        <div style={{ fontSize: 20, fontWeight: 700, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+          <Icon name="clock" size={20} color={C.accentLight} /> Day Coverage
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button style={btn("ghost", true)} onClick={() => setDate(shiftDay(date, -1))}>‹</button>
+          <input type="date" value={date} onChange={e => e.target.value && setDate(e.target.value)}
+            style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6,
+                     padding: "6px 10px", color: C.text, fontSize: 13, outline: "none", colorScheme: "dark" }} />
+          <button style={btn("ghost", true)} onClick={() => setDate(shiftDay(date, 1))}>›</button>
+          <button style={btn("ghost", true)} onClick={() => setDate(localDateStr())}>Today</button>
+          <button style={btn("ghost", true)} onClick={load} disabled={loading}>
+            <Icon name="refresh" size={12} /> {loading ? "…" : "Refresh"}
+          </button>
+        </div>
+      </div>
+
+      {/* Setup warnings — the planner is only as good as these */}
+      {(noStart.length > 0 || noHours.length > 0) && (
+        <div style={{ background: `${C.warning}11`, border: `1px solid ${C.warning}44`, borderRadius: 8,
+                      padding: "12px 16px", marginBottom: "1.5rem", fontSize: 13, color: C.text, lineHeight: 1.6 }}>
+          <strong style={{ color: C.warning }}>Day planning needs setup.</strong>
+          {noStart.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              {noStart.length} Wash Pro{noStart.length === 1 ? " has" : "s have"} no starting point,
+              so no travel time or open time can be worked out for {noStart.length === 1 ? "them" : "them"}:{" "}
+              <span style={{ color: C.textMuted }}>{noStart.map(p => p.legal_name).join(", ")}</span>
+            </div>
+          )}
+          {noHours.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              {noHours.length} {noHours.length === 1 ? "has" : "have"} no working hours and
+              default to 8am–5pm with no daily job limit:{" "}
+              <span style={{ color: C.textMuted }}>{noHours.map(p => p.legal_name).join(", ")}</span>
+            </div>
+          )}
+          <div style={{ marginTop: 6, color: C.textMuted }}>Use Set up on any row below to fix this.</div>
+        </div>
+      )}
+
+      {facilities.length === 0 && (
+        <div style={{ background: `${C.danger}11`, border: `1px solid ${C.danger}44`, borderRadius: 8,
+                      padding: "12px 16px", marginBottom: "1.5rem", fontSize: 13, color: C.text }}>
+          <strong style={{ color: C.danger }}>No active facility.</strong>{" "}
+          Employees start the day from a JECS facility, so add one before assigning anybody to it.
+        </div>
+      )}
+
+      {/* Coverage */}
+      <div style={card}>
+        <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}`, fontSize: 13, fontWeight: 700, color: C.text }}>
+          Wash Pros on {date}
+          <span style={{ color: C.textMuted, fontWeight: 400 }}> · {coverage.length} approved and active</span>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+            <thead><tr style={{ background: C.surfaceAlt }}>
+              <th style={th}>Wash Pro</th><th style={th}>Type</th><th style={th}>Jobs</th>
+              <th style={th}>Booked</th><th style={th}>Available</th>
+              <th style={{ ...th, width: 180 }}>Utilisation</th><th style={th}>Start point</th><th style={th}></th>
+            </tr></thead>
+            <tbody>
+              {coverage.length === 0 && (
+                <tr><td style={{ ...td, color: C.textMuted, textAlign: "center", padding: "28px 16px" }} colSpan={8}>
+                  {loading ? "Loading…" : "No approved, active Wash Pros."}
+                </td></tr>
+              )}
+              {coverage.map(r => {
+                const p    = proById[r.wash_pro_id] || {};
+                const pct  = r.utilisation_pct;
+                const bar  = pct == null ? 0 : Math.min(100, pct);
+                const tone = pct == null ? C.textMuted : pct >= 85 ? C.danger : pct >= 50 ? C.success : C.warning;
+                const start = p.home_facility_id
+                  ? (facilities.find(f => f.facility_id === p.home_facility_id)?.facility_name || "Facility")
+                  : p.base_latitude != null ? (p.base_address || "Own base") : null;
+                return (
+                  <tr key={r.wash_pro_id}>
+                    <td style={{ ...td, fontWeight: 600 }}>{r.legal_name}</td>
+                    <td style={{ ...td, color: C.textMuted, fontSize: 12 }}>
+                      {r.worker_type === "employee" ? "Employee" : "Contractor"}
+                    </td>
+                    <td style={td}>{r.jobs}</td>
+                    <td style={td}>{fmtMins(r.booked_minutes)}</td>
+                    <td style={{ ...td, color: C.textMuted }}>{fmtMins(r.available_minutes)}</td>
+                    <td style={td}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div style={{ flex: 1, height: 6, background: C.surfaceAlt, borderRadius: 999, overflow: "hidden" }}>
+                          <div style={{ width: `${bar}%`, height: "100%", background: tone }} />
+                        </div>
+                        <span style={{ fontSize: 12, color: tone, fontWeight: 700, minWidth: 34, textAlign: "right" }}>
+                          {pct == null ? "—" : `${pct}%`}
+                        </span>
+                      </div>
+                    </td>
+                    <td style={{ ...td, fontSize: 12, color: start ? C.textMuted : C.danger }}>
+                      {start || "Not set"}
+                    </td>
+                    <td style={{ ...td, textAlign: "right" }}>
+                      <button style={btn("ghost", true)} onClick={() => setEditing(p)}>Set up</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Unclaimed jobs */}
+      <div style={card}>
+        <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}`, fontSize: 13, fontWeight: 700, color: C.text }}>
+          Unclaimed on {date}
+          <span style={{ color: C.textMuted, fontWeight: 400 }}> · fewest Wash Pros covering the area first</span>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+            <thead><tr style={{ background: C.surfaceAlt }}>
+              <th style={th}>Customer</th><th style={th}>Request</th><th style={th}>ZIP</th>
+              <th style={th}>Window</th><th style={th}>Starts</th><th style={th}>Covered by</th>
+            </tr></thead>
+            <tbody>
+              {uncovered.length === 0 && (
+                <tr><td style={{ ...td, color: C.textMuted, textAlign: "center", padding: "28px 16px" }} colSpan={6}>
+                  {loading ? "Loading…" : "Every job for this day has been claimed."}
+                </td></tr>
+              )}
+              {uncovered.map(j => (
+                <tr key={j.appointment_id}>
+                  <td style={{ ...td, fontWeight: 600 }}>{j.customer_name}</td>
+                  <td style={{ ...td, color: C.textMuted, fontSize: 12 }}>{j.service_request_number}</td>
+                  <td style={td}>{j.zip_code}</td>
+                  <td style={{ ...td, color: C.textMuted, fontSize: 12 }}>{j.window_label || "Flexible"}</td>
+                  <td style={{ ...td, color: C.textMuted, fontSize: 12 }}>{fmtClock(j.scheduled_start)}</td>
+                  <td style={td}>
+                    {j.covering_wash_pros === 0 ? (
+                      <span style={{ color: C.danger, fontWeight: 700, fontSize: 12 }}>Nobody covers this ZIP</span>
+                    ) : (
+                      <span style={{ color: C.textMuted, fontSize: 12 }}>
+                        {j.covering_wash_pros} Wash Pro{j.covering_wash_pros === 1 ? "" : "s"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {editing && (
+        <WashProDayModal
+          pro={editing}
+          facilities={facilities}
+          availability={availability.filter(a => a.wash_pro_id === editing.wash_pro_id)}
+          onClose={() => setEditing(null)}
+          onSaved={msg => { setEditing(null); showToast(msg); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Start point and weekly hours for one Wash Pro ────────────────────────────
+function WashProDayModal({ pro, facilities, availability, onClose, onSaved }) {
+  const [facilityId, setFacilityId] = useState(pro.home_facility_id || "");
+  const [address,    setAddress]    = useState(pro.base_address   || "");
+  const [lat,        setLat]        = useState(pro.base_latitude  ?? "");
+  const [lon,        setLon]        = useState(pro.base_longitude ?? "");
+  const [rows,       setRows]       = useState(() =>
+    DAY_NAMES.map((_, dow) => {
+      const existing = availability.find(a => a.day_of_week === dow);
+      return {
+        availability_id: existing?.availability_id || null,
+        day_of_week:     dow,
+        on:              !!existing,
+        start_time:      (existing?.start_time || "08:00").slice(0, 5),
+        end_time:        (existing?.end_time   || "17:00").slice(0, 5),
+        max_daily_jobs:  existing?.max_daily_jobs ?? "",
+      };
+    })
+  );
+  const [saving, setSaving] = useState(false);
+  const [error,  setError]  = useState("");
+
+  const inp = { background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6,
+                padding: "7px 11px", color: C.text, fontSize: 13, outline: "none", width: "100%", colorScheme: "dark" };
+  const lbl = { fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.06em",
+                textTransform: "uppercase", display: "block", marginBottom: 4 };
+
+  const setRow = (dow, patch) =>
+    setRows(rs => rs.map(r => (r.day_of_week === dow ? { ...r, ...patch } : r)));
+
+  async function save() {
+    setError("");
+    const useFacility = !!facilityId;
+    if (!useFacility && (lat === "" || lon === "")) {
+      setError("Pick a facility, or give a latitude and longitude for this Wash Pro's own base.");
+      return;
+    }
+    const badRow = rows.find(r => r.on && r.end_time <= r.start_time);
+    if (badRow) {
+      setError(`${DAY_NAMES[badRow.day_of_week]} finishes before it starts.`);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await sbFetch(`wash_pro_profiles?wash_pro_id=eq.${pro.wash_pro_id}`, {
+        method: "PATCH",
+        body: JSON.stringify(useFacility
+          ? { home_facility_id: facilityId, base_address: address || null,
+              base_latitude: null, base_longitude: null }
+          : { home_facility_id: null, base_address: address || null,
+              base_latitude: parseFloat(lat), base_longitude: parseFloat(lon) }),
+      });
+
+      for (const r of rows) {
+        const payload = {
+          wash_pro_id:    pro.wash_pro_id,
+          day_of_week:    r.day_of_week,
+          start_time:     r.start_time,
+          end_time:       r.end_time,
+          max_daily_jobs: r.max_daily_jobs === "" ? null : parseInt(r.max_daily_jobs, 10),
+          active:         r.on,
+        };
+        if (r.availability_id) {
+          await sbFetch(`wash_pro_availability?availability_id=eq.${r.availability_id}`,
+            { method: "PATCH", body: JSON.stringify(payload) });
+        } else if (r.on) {
+          await sbFetch("wash_pro_availability", { method: "POST", body: JSON.stringify(payload) });
+        }
+      }
+      onSaved(`${pro.legal_name} updated.`);
+    } catch (err) {
+      setError(String(err.message || err).slice(0, 300));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "#000000AA", zIndex: 900,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.surface, border: `1px solid ${C.border}`,
+        borderRadius: 12, width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto" }}>
+
+        <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}`,
+                      display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.text }}>
+            Day setup · {pro.legal_name}
+            <div style={{ fontSize: 12, fontWeight: 400, color: C.textMuted, marginTop: 2 }}>
+              {pro.worker_type === "employee" ? "Employee" : "Independent contractor"}
+            </div>
+          </div>
+          <button style={btn("ghost", true)} onClick={onClose}><Icon name="x" size={12} /></button>
+        </div>
+
+        <div style={{ padding: "18px 20px" }}>
+          <div style={{ marginBottom: 18 }}>
+            <label style={lbl}>Starts the day from</label>
+            <select value={facilityId} onChange={e => setFacilityId(e.target.value)} style={inp}>
+              <option value="">Their own base location</option>
+              {facilities.map(f => (
+                <option key={f.facility_id} value={f.facility_id}>{f.facility_name}</option>
+              ))}
+            </select>
+            <p style={{ fontSize: 11, color: C.textMuted, margin: "6px 0 0", lineHeight: 1.5 }}>
+              Employees normally start from a JECS facility. Contractors start from their own base.
+            </p>
+          </div>
+
+          {!facilityId && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <label style={lbl}>Base address</label>
+                <input style={inp} value={address} onChange={e => setAddress(e.target.value)}
+                  placeholder="Where they set off from" />
+              </div>
+              <div>
+                <label style={lbl}>Latitude</label>
+                <input style={inp} value={lat} onChange={e => setLat(e.target.value)} placeholder="36.1627" />
+              </div>
+              <div>
+                <label style={lbl}>Longitude</label>
+                <input style={inp} value={lon} onChange={e => setLon(e.target.value)} placeholder="-86.7816" />
+              </div>
+            </div>
+          )}
+
+          <label style={{ ...lbl, marginBottom: 8 }}>Working hours</label>
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
+            {rows.map(r => (
+              <div key={r.day_of_week} style={{ display: "flex", alignItems: "center", gap: 8,
+                padding: "8px 12px", borderBottom: `1px solid ${C.border}22`,
+                background: r.on ? "transparent" : `${C.base}66` }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 7, width: 118, cursor: "pointer" }}>
+                  <input type="checkbox" checked={r.on}
+                    onChange={e => setRow(r.day_of_week, { on: e.target.checked })} />
+                  <span style={{ fontSize: 13, color: r.on ? C.text : C.textMuted }}>
+                    {DAY_NAMES[r.day_of_week]}
+                  </span>
+                </label>
+                <input type="time" value={r.start_time} disabled={!r.on}
+                  onChange={e => setRow(r.day_of_week, { start_time: e.target.value })}
+                  style={{ ...inp, width: 118, opacity: r.on ? 1 : 0.4 }} />
+                <span style={{ color: C.textMuted, fontSize: 12 }}>to</span>
+                <input type="time" value={r.end_time} disabled={!r.on}
+                  onChange={e => setRow(r.day_of_week, { end_time: e.target.value })}
+                  style={{ ...inp, width: 118, opacity: r.on ? 1 : 0.4 }} />
+                <input type="number" min="1" value={r.max_daily_jobs} disabled={!r.on}
+                  onChange={e => setRow(r.day_of_week, { max_daily_jobs: e.target.value })}
+                  placeholder="Max jobs"
+                  style={{ ...inp, width: 96, opacity: r.on ? 1 : 0.4 }} />
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: C.textMuted, margin: "6px 0 0", lineHeight: 1.5 }}>
+            Leave max jobs blank for no limit. Once a Wash Pro reaches the limit the planner stops suggesting extra work.
+          </p>
+
+          {error && (
+            <div style={{ marginTop: 14, background: `${C.danger}11`, border: `1px solid ${C.danger}44`,
+                          borderRadius: 6, padding: "9px 12px", fontSize: 12, color: C.danger }}>{error}</div>
+          )}
+        </div>
+
+        <div style={{ padding: "14px 20px", borderTop: `1px solid ${C.border}`,
+                      display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button style={btn("ghost")} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={btn("primary")} onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [user, setUser]         = useState(null);
@@ -2452,6 +2864,7 @@ export default function App() {
           {tab === "dashboard"    && <DashboardTab onNavigate={setTab} />}
           {tab === "appointments" && <AppointmentsTab />}
           {tab === "washpro"      && <WashProTab />}
+          {tab === "coverage"     && <CoverageTab />}
           {tab === "customers"    && <CustomersTab />}
           {tab === "packages"     && <ServicePackagesTab />}
           {tab === "washpros"     && <WashProProfilesTab />}
