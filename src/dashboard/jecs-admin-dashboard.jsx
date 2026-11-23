@@ -201,6 +201,7 @@ const PATHS = {
   clock:        "M12 2a10 10 0 110 20A10 10 0 0112 2zm0 5v5l3 3",
   packages:     "M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2zM4 5h16M9 3h6",
   washpros:     "M9 11a4 4 0 100-8 4 4 0 000 8zm8 0a3 3 0 100-6 3 3 0 000 6zM3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2M19 14v4m0 0v4m0-4h4m-4 0h-4",
+  money:        "M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6",
 };
 
 function Icon({ name, size = 16, color = "currentColor" }) {
@@ -2376,6 +2377,419 @@ function WashProProfilesTab() {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EARNINGS & PAYOUTS TAB
+//
+// Every captured job is split four ways and recorded in t3_earnings. Stripe
+// Connect is not live yet, so an admin sends each payee their money from the
+// Stripe dashboard and records it here — recording is what marks the earnings
+// paid, so this screen always reflects money that actually moved.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function money(cents) {
+  if (cents == null) return "—";
+  const neg = cents < 0;
+  const s = (Math.abs(cents) / 100).toLocaleString("en-US", {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+  return `${neg ? "−" : ""}$${s}`;
+}
+
+function fmtDateTime(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts.includes("Z") || ts.includes("+") ? ts : ts + "Z");
+  if (isNaN(d)) return "—";
+  return d.toLocaleString("en-US", {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
+
+const PAYEE_LABEL = {
+  wash_pro:     "Wash Pro",
+  jecs:         "JECS Quick Wash",
+  tech_reserve: "Technology reserve",
+  developer:    "Developer",
+};
+const PAYEE_COLOR = {
+  wash_pro:     C.success,
+  jecs:         C.gold,
+  tech_reserve: C.purple,
+  developer:    C.accentLight,
+};
+
+function EarningsTab() {
+  const [worksheet, setWorksheet] = useState([]);
+  const [splits,    setSplits]    = useState([]);
+  const [settings,  setSettings]  = useState(null);
+  const [loading,   setLoading]   = useState(true);
+  const [error,     setError]     = useState("");
+  const [paying,    setPaying]    = useState(null);
+  const [toast,     setToast]     = useState("");
+  const [limit,     setLimit]     = useState(25);
+
+  const showToast = m => { setToast(m); setTimeout(() => setToast(""), 3500); };
+
+  const load = useCallback(async () => {
+    setLoading(true); setError("");
+    try {
+      const [ws, sp, st] = await Promise.all([
+        sbFetch("rpc/admin_payout_worksheet", { method: "POST", body: "{}" }),
+        sbFetch("rpc/admin_transaction_splits", {
+          method: "POST", body: JSON.stringify({ p_limit: limit }),
+        }),
+        sbFetch("t3_payout_settings?select=*&limit=1").catch(() => []),
+      ]);
+      setWorksheet(ws || []);
+      setSplits(sp || []);
+      setSettings((st && st[0]) || null);
+    } catch (e) {
+      setError(String(e.message || e).slice(0, 400));
+    }
+    setLoading(false);
+  }, [limit]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const owedNow   = worksheet.reduce((s, r) => s + (r.available_cents    || 0), 0);
+  const maturing  = worksheet.reduce((s, r) => s + (r.pending_cents      || 0), 0);
+  const paidTotal = worksheet.reduce((s, r) => s + (r.paid_to_date_cents || 0), 0);
+  const grossCap  = splits.reduce((s, r) => s + (r.gross_cents || 0), 0);
+
+  const td   = { padding: "12px 16px", borderBottom: `1px solid ${C.border}22`, color: C.text, fontSize: 13, verticalAlign: "middle" };
+  const th   = { padding: "9px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase" };
+  const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden", marginBottom: "1.5rem" };
+  const num  = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+  const thR  = { ...th, textAlign: "right" };
+
+  return (
+    <div>
+      <Toast msg={toast} />
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", flexWrap: "wrap", gap: 12 }}>
+        <div style={{ fontSize: 20, fontWeight: 700, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+          <Icon name="money" size={20} color={C.gold} /> Earnings &amp; Payouts
+        </div>
+        <button onClick={load} disabled={loading}
+          style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 7,
+                   padding: "8px 14px", color: C.text, fontSize: 13, cursor: loading ? "default" : "pointer",
+                   display: "flex", alignItems: "center", gap: 7, opacity: loading ? 0.6 : 1 }}>
+          <Icon name="refresh" size={14} color={C.textMuted} /> {loading ? "Loading…" : "Refresh"}
+        </button>
+      </div>
+
+      {/* The phase we are in, stated plainly so nobody waits for an automatic transfer */}
+      {settings && !settings.self_service_payouts_enabled && (
+        <div style={{ background: `${C.gold}14`, border: `1px solid ${C.gold}44`, borderRadius: 9,
+                      padding: "12px 16px", marginBottom: "1.5rem", display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <Icon name="alert" size={16} color={C.gold} />
+          <div style={{ fontSize: 13, color: C.text, lineHeight: 1.55 }}>
+            <strong style={{ color: C.goldLight }}>Payouts are manual right now.</strong>{" "}
+            Send each payee their money in Stripe, then record it below so the ledger
+            marks those earnings paid. Wash Pros can see their earnings but cannot cash
+            out until Stripe Connect is live.
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div style={{ background: `${C.danger}14`, border: `1px solid ${C.danger}55`, borderRadius: 9,
+                      padding: "12px 16px", marginBottom: "1.5rem", color: C.text, fontSize: 13 }}>
+          <strong style={{ color: C.danger }}>Could not load earnings.</strong> {error}
+        </div>
+      )}
+
+      {/* Headline figures */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14, marginBottom: "1.5rem" }}>
+        {[
+          { label: "Owed now",        value: money(owedNow),   color: C.goldLight, note: "cleared the holding period" },
+          { label: "Still maturing",  value: money(maturing),  color: C.textMuted, note: `holds for ${settings?.holding_hours ?? 24}h after capture` },
+          { label: "Paid to date",    value: money(paidTotal), color: C.success,   note: "recorded as sent" },
+          { label: "Gross, last " + splits.length + " jobs", value: money(grossCap), color: C.text, note: "before Stripe fees" },
+        ].map(c => (
+          <div key={c.label} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 18px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase" }}>{c.label}</div>
+            <div style={{ fontSize: 25, fontWeight: 700, color: c.color, marginTop: 7, fontVariantNumeric: "tabular-nums" }}>{c.value}</div>
+            <div style={{ fontSize: 11, color: C.textMuted, marginTop: 5 }}>{c.note}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Who is owed what */}
+      <div style={card}>
+        <div style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}`, fontSize: 14, fontWeight: 700, color: C.text }}>
+          Payout worksheet
+          <span style={{ fontWeight: 400, color: C.textMuted, fontSize: 12, marginLeft: 8 }}>
+            one row per payee — pay in Stripe, then record it here
+          </span>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+            <thead><tr style={{ background: C.surfaceAlt }}>
+              <th style={th}>Payee</th>
+              <th style={thR}>Owed now</th>
+              <th style={thR}>Jobs</th>
+              <th style={th}>Oldest unpaid</th>
+              <th style={thR}>Maturing</th>
+              <th style={thR}>Paid to date</th>
+              <th style={th}>Last payout</th>
+              <th style={th}></th>
+            </tr></thead>
+            <tbody>
+              {!loading && worksheet.length === 0 && (
+                <tr><td style={{ ...td, color: C.textMuted, textAlign: "center", padding: "2rem" }} colSpan={8}>
+                  No earnings recorded yet. They appear here once a job is captured.
+                </td></tr>
+              )}
+              {worksheet.map(r => (
+                <tr key={`${r.payee_type}:${r.wash_pro_id || "house"}`}>
+                  <td style={td}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 4, background: PAYEE_COLOR[r.payee_type] || C.textMuted, flexShrink: 0 }} />
+                      <div>
+                        <div style={{ fontWeight: 600 }}>{r.payee_name}</div>
+                        {/* the label only adds anything when it is not the name again */}
+                        {PAYEE_LABEL[r.payee_type] !== r.payee_name && (
+                          <div style={{ fontSize: 11, color: C.textMuted }}>
+                            {PAYEE_LABEL[r.payee_type] || r.payee_type}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td style={{ ...num, fontWeight: 700, color: r.available_cents > 0 ? C.goldLight : C.textMuted }}>
+                    {money(r.available_cents)}
+                  </td>
+                  <td style={num}>{r.earning_count || 0}</td>
+                  <td style={{ ...td, fontSize: 12, color: C.textMuted }}>{fmtDateTime(r.oldest_available_at)}</td>
+                  <td style={{ ...num, color: C.textMuted }}>{money(r.pending_cents)}</td>
+                  <td style={{ ...num, color: r.paid_to_date_cents > 0 ? C.success : C.textMuted }}>{money(r.paid_to_date_cents)}</td>
+                  <td style={{ ...td, fontSize: 12, color: C.textMuted }}>
+                    {r.last_reference
+                      ? <><div style={{ fontFamily: "ui-monospace, monospace", color: C.text }}>{r.last_reference}</div>
+                          <div>{fmtDateTime(r.last_paid_at)}</div></>
+                      : "—"}
+                  </td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    {r.available_cents > 0 && (
+                      <button onClick={() => setPaying(r)}
+                        style={{ background: C.gold, border: "none", borderRadius: 6, padding: "7px 13px",
+                                 color: "#1A1205", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+                        Record payout
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* The split, job by job */}
+      <div style={card}>
+        <div style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}`, display: "flex",
+                      justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>
+            Revenue split, job by job
+            <span style={{ fontWeight: 400, color: C.textMuted, fontSize: 12, marginLeft: 8 }}>
+              at the rate in force when each job was captured
+            </span>
+          </div>
+          <select value={limit} onChange={e => setLimit(Number(e.target.value))}
+            style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6,
+                     padding: "6px 10px", color: C.text, fontSize: 12, outline: "none", colorScheme: "dark" }}>
+            {[25, 50, 100, 250].map(n => <option key={n} value={n}>Last {n}</option>)}
+          </select>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1040 }}>
+            <thead><tr style={{ background: C.surfaceAlt }}>
+              <th style={th}>Captured</th>
+              <th style={th}>Customer</th>
+              <th style={th}>Wash Pro</th>
+              <th style={thR}>Gross</th>
+              <th style={thR}>Stripe fee</th>
+              <th style={thR}>Net</th>
+              <th style={thR}>Wash Pro</th>
+              <th style={thR}>JECS</th>
+              <th style={thR}>Tech</th>
+              <th style={thR}>Developer</th>
+              <th style={thR}>Tip</th>
+              <th style={th}>Ledger</th>
+            </tr></thead>
+            <tbody>
+              {!loading && splits.length === 0 && (
+                <tr><td style={{ ...td, color: C.textMuted, textAlign: "center", padding: "2rem" }} colSpan={12}>
+                  No captured jobs yet.
+                </td></tr>
+              )}
+              {splits.map(r => {
+                const parts = (r.wash_pro_cents || 0) + (r.jecs_cents || 0)
+                            + (r.tech_reserve_cents || 0) + (r.developer_cents || 0);
+                const balanced = parts === r.net_cents;
+                return (
+                  <tr key={r.transaction_id}>
+                    <td style={{ ...td, fontSize: 12, color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDateTime(r.captured_at)}</td>
+                    <td style={td}>{r.customer_name}</td>
+                    <td style={{ ...td, fontSize: 12 }}>{r.wash_pro_name}</td>
+                    <td style={num}>{money(r.gross_cents)}</td>
+                    <td style={{ ...num, color: C.textMuted }}>{money(r.provider_fee_cents)}</td>
+                    <td style={{ ...num, fontWeight: 600 }}>{money(r.net_cents)}</td>
+                    <td style={{ ...num, color: C.success }}>{money(r.wash_pro_cents)}</td>
+                    <td style={{ ...num, color: C.gold }}>{money(r.jecs_cents)}</td>
+                    <td style={{ ...num, color: r.tech_reserve_cents ? C.purple : C.textMuted }}>{money(r.tech_reserve_cents)}</td>
+                    <td style={{ ...num, color: r.developer_cents ? C.accentLight : C.textMuted }}>{money(r.developer_cents)}</td>
+                    <td style={{ ...num, color: r.tip_cents ? C.text : C.textMuted }}>{money(r.tip_cents)}</td>
+                    <td style={{ ...td, fontSize: 11 }}>
+                      {!r.earnings_recorded
+                        ? <span style={{ color: C.danger }}>not recorded</span>
+                        : !balanced
+                          ? <span style={{ color: C.warning }} title={`shares total ${money(parts)}, net is ${money(r.net_cents)}`}>off by {money(r.net_cents - parts)}</span>
+                          : <span style={{ color: C.textMuted, display: "flex", alignItems: "center", gap: 4 }}>
+                              <Icon name="check" size={12} color={C.success} /> balanced
+                            </span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {paying && (
+        <RecordPayoutModal
+          row={paying}
+          onClose={() => setPaying(null)}
+          onDone={msg => { setPaying(null); showToast(msg); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Records a payout the admin has already sent in Stripe. The amount is taken
+// from the ledger, not typed in — the admin supplies only the Stripe reference,
+// and the expected figure is sent along so a payout cannot be recorded against
+// an amount that changed while this dialog was open.
+function RecordPayoutModal({ row, onClose, onDone }) {
+  const [reference, setReference] = useState("");
+  const [note,      setNote]      = useState("");
+  const [saving,    setSaving]    = useState(false);
+  const [error,     setError]     = useState("");
+
+  const inp = { background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 6,
+                padding: "9px 12px", color: C.text, fontSize: 13, outline: "none", width: "100%", colorScheme: "dark" };
+  const lbl = { fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.06em",
+                textTransform: "uppercase", display: "block", marginBottom: 5 };
+
+  const submit = async () => {
+    if (!reference.trim()) { setError("Enter the Stripe transfer or payout reference."); return; }
+    setSaving(true); setError("");
+    try {
+      const res = await sbFetch("rpc/admin_record_manual_payout", {
+        method: "POST",
+        body: JSON.stringify({
+          p_payee_type:     row.payee_type,
+          p_wash_pro_id:    row.wash_pro_id || null,
+          p_reference:      reference.trim(),
+          p_expected_cents: row.available_cents,
+          p_note:           note.trim() || null,
+        }),
+      });
+      if (res && res.success) {
+        onDone(`Recorded ${money(res.amount_cents)} to ${row.payee_name} — ${res.earning_count} job${res.earning_count === 1 ? "" : "s"} marked paid.`);
+        return;
+      }
+      setError(res?.actual_cents != null
+        ? `${res.error} The ledger now shows ${money(res.actual_cents)} owed, not ${money(res.expected_cents)}. Close this, refresh, and check Stripe before recording.`
+        : (res?.error || "Could not record the payout."));
+    } catch (e) {
+      setError(String(e.message || e).slice(0, 300));
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "#000000AA", display: "flex",
+               alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12,
+                 width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "auto" }}>
+
+        <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex",
+                      justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Record a payout</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", padding: 4, lineHeight: 0 }}>
+            <Icon name="x" size={17} color={C.textMuted} />
+          </button>
+        </div>
+
+        <div style={{ padding: "20px" }}>
+          <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 9,
+                        padding: "14px 16px", marginBottom: "1.25rem" }}>
+            <div style={{ fontSize: 12, color: C.textMuted }}>Paying</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginTop: 2 }}>{row.payee_name}</div>
+            {PAYEE_LABEL[row.payee_type] !== row.payee_name && (
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 1 }}>
+                {PAYEE_LABEL[row.payee_type] || row.payee_type}
+              </div>
+            )}
+            <div style={{ fontSize: 30, fontWeight: 700, color: C.goldLight, marginTop: 11, fontVariantNumeric: "tabular-nums" }}>
+              {money(row.available_cents)}
+            </div>
+            <div style={{ fontSize: 11, color: C.textMuted, marginTop: 3 }}>
+              across {row.earning_count} job{row.earning_count === 1 ? "" : "s"}
+            </div>
+          </div>
+
+          <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6, marginBottom: "1.25rem" }}>
+            Send this amount in Stripe first. Recording it here marks those
+            earnings paid and cannot be undone from this screen.
+          </div>
+
+          <div style={{ marginBottom: "1rem" }}>
+            <label style={lbl}>Stripe reference</label>
+            <input value={reference} onChange={e => setReference(e.target.value)}
+              placeholder="po_… or tr_…" autoFocus style={{ ...inp, fontFamily: "ui-monospace, monospace" }} />
+            <div style={{ fontSize: 11, color: C.textMuted, marginTop: 5 }}>
+              The payout or transfer ID from Stripe, so this row can be traced back.
+            </div>
+          </div>
+
+          <div style={{ marginBottom: "1.25rem" }}>
+            <label style={lbl}>Note <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
+            <input value={note} onChange={e => setNote(e.target.value)}
+              placeholder="e.g. sent from Stripe balance" style={inp} />
+          </div>
+
+          {error && (
+            <div style={{ background: `${C.danger}14`, border: `1px solid ${C.danger}55`, borderRadius: 7,
+                          padding: "11px 14px", marginBottom: "1.25rem", color: C.text, fontSize: 12.5, lineHeight: 1.55 }}>
+              {error}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <button onClick={onClose} disabled={saving}
+              style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 7,
+                       padding: "9px 16px", color: C.text, fontSize: 13, cursor: "pointer" }}>
+              Cancel
+            </button>
+            <button onClick={submit} disabled={saving || !reference.trim()}
+              style={{ background: saving || !reference.trim() ? C.border : C.gold, border: "none", borderRadius: 7,
+                       padding: "9px 18px", color: saving || !reference.trim() ? C.textMuted : "#1A1205",
+                       fontSize: 13, fontWeight: 700, cursor: saving || !reference.trim() ? "default" : "pointer" }}>
+              {saving ? "Recording…" : `Record ${money(row.available_cents)}`}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── App Shell ─────────────────────────────────────────────────────────────────
 const NAV = [
   { id: "dashboard",    label: "Dashboard",         icon: "dashboard" },
@@ -2385,6 +2799,7 @@ const NAV = [
   { id: "customers",    label: "Customers",         icon: "customers" },
   { id: "packages",     label: "Service Packages",  icon: "packages" },
   { id: "washpros",     label: "Wash Pro Profiles", icon: "washpros" },
+  { id: "earnings",     label: "Earnings & Payouts", icon: "money" },
 ];
 
 const NAV_COLORS = {
@@ -2395,6 +2810,7 @@ const NAV_COLORS = {
   customers:    C.gold,
   packages:     C.gold,
   washpros:     C.purple,
+  earnings:     C.gold,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2868,6 +3284,7 @@ export default function App() {
           {tab === "customers"    && <CustomersTab />}
           {tab === "packages"     && <ServicePackagesTab />}
           {tab === "washpros"     && <WashProProfilesTab />}
+          {tab === "earnings"     && <EarningsTab />}
         </main>
       </div>
     </div>
