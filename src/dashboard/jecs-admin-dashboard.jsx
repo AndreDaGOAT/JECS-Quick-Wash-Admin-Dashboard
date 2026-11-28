@@ -2420,6 +2420,7 @@ const PAYEE_COLOR = {
 function EarningsTab() {
   const [worksheet, setWorksheet] = useState([]);
   const [splits,    setSplits]    = useState([]);
+  const [unpaid,    setUnpaid]    = useState([]);
   const [settings,  setSettings]  = useState(null);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState("");
@@ -2432,16 +2433,22 @@ function EarningsTab() {
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [ws, sp, st] = await Promise.all([
+      const [ws, sp, st, up] = await Promise.all([
         sbFetch("rpc/admin_payout_worksheet", { method: "POST", body: "{}" }),
         sbFetch("rpc/admin_transaction_splits", {
           method: "POST", body: JSON.stringify({ p_limit: limit }),
         }),
         sbFetch("t3_payout_settings?select=*&limit=1").catch(() => []),
+        // Tolerated if absent, so this tab still works before
+        // admin-unpaid-jobs.sql has been applied.
+        sbFetch("rpc/admin_unpaid_jobs", {
+          method: "POST", body: JSON.stringify({ p_limit: 100 }),
+        }).catch(() => []),
       ]);
       setWorksheet(ws || []);
       setSplits(sp || []);
       setSettings((st && st[0]) || null);
+      setUnpaid(up || []);
     } catch (e) {
       setError(String(e.message || e).slice(0, 400));
     }
@@ -2513,6 +2520,78 @@ function EarningsTab() {
           </div>
         ))}
       </div>
+
+      {/* Work done, money not collected.
+          Sits above the worksheet on purpose: an uncollected job is more
+          urgent than an unpaid payee, because a Stripe hold lapses after
+          about 7 days and then the money cannot be taken at all. This panel
+          exists because eight jobs went uncollected with the only evidence
+          being a console message on a Wash Pro's phone. */}
+      {unpaid.length > 0 && (
+        <div style={{ ...card, border: `1px solid ${C.danger}55` }}>
+          <div style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}`,
+                        display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+            <Icon name="alert" size={16} color={C.danger} />
+            <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>
+              Completed jobs with no payment
+            </span>
+            <span style={{ fontSize: 12, color: C.textMuted }}>
+              {unpaid.length} job{unpaid.length === 1 ? "" : "s"} ·{" "}
+              {money(unpaid.reduce((s, r) => s + (r.amount_cents || 0), 0))} outstanding
+            </span>
+            {unpaid.some(r => r.recoverable) && (
+              <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700,
+                             color: C.goldLight, background: `${C.gold}1F`,
+                             border: `1px solid ${C.gold}55`, borderRadius: 20,
+                             padding: "3px 10px", whiteSpace: "nowrap" }}>
+                {unpaid.filter(r => r.recoverable).length} still collectable
+              </span>
+            )}
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+              <thead><tr style={{ background: C.surfaceAlt }}>
+                <th style={th}>Served</th>
+                <th style={th}>Customer</th>
+                <th style={th}>Wash Pro</th>
+                <th style={thR}>Amount</th>
+                <th style={th}>Problem</th>
+                <th style={thR}>Hold age</th>
+              </tr></thead>
+              <tbody>
+                {unpaid.map(r => (
+                  <tr key={r.appointment_id}>
+                    <td style={td}>
+                      {r.scheduled_start
+                        ? new Date(r.scheduled_start).toLocaleDateString("en-US",
+                            { month: "short", day: "numeric" })
+                        : "—"}
+                    </td>
+                    <td style={td}>{r.customer_name}</td>
+                    <td style={{ ...td, color: r.wash_pro_name?.startsWith("—")
+                                   ? C.textMuted : C.text }}>
+                      {r.wash_pro_name}
+                    </td>
+                    <td style={num}>{money(r.amount_cents || 0)}</td>
+                    <td style={td}>
+                      <div style={{ color: r.recoverable ? C.goldLight : C.danger,
+                                    fontWeight: 600 }}>
+                        {r.problem}
+                      </div>
+                      <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>
+                        {r.detail}
+                      </div>
+                    </td>
+                    <td style={{ ...num, color: r.recoverable ? C.text : C.textMuted }}>
+                      {r.auth_age_days == null ? "—" : `${r.auth_age_days}d`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Who is owed what */}
       <div style={card}>
